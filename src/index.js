@@ -179,17 +179,14 @@ function embedPanel(client) {
     .setColor(CONFIG.color)
     .setTitle('◈  Generate')
     .setDescription(
-      '```\nGénère un serveur Discord complet, unique et personnalisé grâce à l\'IA.\n```\n' +
+      '```\nGénère un serveur Discord complet et personnalisé.\n```\n' +
       '**Catégories  •  Salons  •  Rôles  •  Tickets  •  Logs  •  Règlement**\n\n' +
       '─────────────────────────────\n' +
       '**〔 Comment ça marche 〕**\n' +
       '> 1. Ajoute le bot sur ton serveur via le bouton ci-dessous\n' +
       '> 2. Lance `+generate` ici pour configurer\n' +
       '> 3. Choisis le serveur cible\n' +
-      '> 4. Réponds aux questions → ton serveur est généré !\n\n' +
-      '─────────────────────────────\n' +
-      '**〔 Powered by 〕**\n' +
-      '> Claude AI — chaque serveur est **100% unique**'
+      '> 4. Réponds aux questions → ton serveur est généré !'
     )
     .setThumbnail(client.user.displayAvatarURL({ size: 256 }))
     .setFooter({ text: 'Generate  •  Serveur professionnel en quelques minutes' })
@@ -638,7 +635,7 @@ async function buildServer(guild, data, plan) {
         .setColor(CONFIG.color)
         .setTitle(`🚀  ${data.serverName} est maintenant en ligne !`)
         .setDescription(plan?.serverDescription || `Bienvenue sur **${data.serverName}** — le serveur est prêt, profitez-en !`)
-        .setFooter({ text: `Généré par Generate  •  IA Claude` })
+        .setFooter({ text: `Generate  •  Serveur généré` })
         .setTimestamp();
       await channelRefs.general.send({ embeds: [launchEmbed] });
       stats.configured++;
@@ -1001,7 +998,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     await interaction.update({
-      embeds: [embedBase('◈  Génération en cours...', '`▓▓▓▓▓░░░░░` 50% — Construction de la structure...\n\n*Appel à l\'IA Claude pour personnalisation...*')],
+      embeds: [embedBase('◈  Génération en cours...', '`▓▓▓▓▓░░░░░` 50% — Construction de la structure...\n\n*Patiente quelques secondes.*')],
       components: []
     });
 
@@ -1010,7 +1007,7 @@ client.on('interactionCreate', async (interaction) => {
       let plan = null;
       if (CONFIG.anthropicKey) {
         await interaction.editReply({
-          embeds: [embedBase('◈  Génération en cours...', '`▓▓▓░░░░░░░` 30% — IA Claude génère un plan unique...\n\n*Personnalisation en cours...*')]
+          embeds: [embedBase('◈  Génération en cours...', '`▓▓▓░░░░░░░` 30% — Personnalisation en cours...\n\n*Patiente quelques secondes.*')]
         });
         plan = await generateServerPlan(session.data);
       }
@@ -1024,16 +1021,13 @@ client.on('interactionCreate', async (interaction) => {
       DB.incGens(interaction.user.id);
       sessions.delete(interaction.user.id);
 
-      const aiNote = plan ? '\n> 🤖 **Plan généré par Claude AI** — serveur 100% unique' : '';
-
       return interaction.editReply({
         embeds: [embedOk('◈  Génération terminée ✓',
           `**${session.data.serverName}** est prêt sur **${guild.name}** !\n\n` +
           `> 📂 **Catégories :** ${stats.categories}\n` +
           `> 💬 **Salons :** ${stats.channels}\n` +
           `> 🎭 **Rôles :** ${stats.roles}\n` +
-          `> ⚙️ **Salons configurés :** ${stats.configured}` +
-          aiNote
+          `> ⚙️ **Salons configurés :** ${stats.configured}`
         )]
       });
     } catch (err) {
