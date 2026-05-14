@@ -7,7 +7,7 @@ from groq import Groq
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 OWNER_ID = 1191963306785787946 # Remplace par ton ID Discord
-REQUIRED_GUILD_INVITE = "https://discord.gg/45zytfB8gv"
+REQUIRED_GUILD_INVITE = "https://discord.gg/2PvXETvFFG"
 PREFIX = "+"
 DATA_FILE = "data.json"
 
