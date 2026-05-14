@@ -5,27 +5,27 @@ const {
   Client, GatewayIntentBits, Partials,
   EmbedBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, StringSelectMenuBuilder, PermissionFlagsBits,
-  ChannelType
+  ChannelType, AuditLogEvent
 } = require('discord.js');
+const fs   = require('fs');
+const path = require('path');
+const axios = require('axios');
 
 // ═══════════════════════════════════════════════════════════
 //  CONFIG
 // ═══════════════════════════════════════════════════════════
 const CONFIG = {
-  token:         process.env.TOKEN,
-  ownerId:       process.env.OWNER_ID || '1191963306785787946',
-  mainGuildId:   process.env.MAIN_GUILD_ID || '',
-  supportInvite: process.env.SUPPORT_INVITE || 'https://discord.gg/2PvXETvFFG',
-  prefix:        process.env.PREFIX || '+',
-  color:         0x2B2D31
+  token:          process.env.TOKEN,
+  ownerId:        process.env.OWNER_ID || '1191963306785787946',
+  supportInvite:  process.env.SUPPORT_INVITE || 'https://discord.gg/2PvXETvFFG',
+  prefix:         process.env.PREFIX || '+',
+  color:          0x2B2D31,
+  anthropicKey:   process.env.ANTHROPIC_API_KEY || ''
 };
 
 // ═══════════════════════════════════════════════════════════
-//  BASE DE DONNÉES (JSON en mémoire + fichier)
+//  DATABASE
 // ═══════════════════════════════════════════════════════════
-const fs   = require('fs');
-const path = require('path');
-
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DB_FILE  = path.join(DATA_DIR, 'db.json');
 
@@ -33,61 +33,113 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE))  fs.writeFileSync(DB_FILE, '{}', 'utf8');
 
 const DB = {
-  read() {
-    try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch { return {}; }
-  },
-  write(data) {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
-  },
-  get(key, def = null) {
-    const d = this.read();
-    return d[key] !== undefined ? d[key] : def;
-  },
-  set(key, val) {
-    const d = this.read();
-    d[key] = val;
-    this.write(d);
-  },
-  del(key) {
-    const d = this.read();
-    delete d[key];
-    this.write(d);
-  },
+  read()        { try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch { return {}; } },
+  write(data)   { fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf8'); },
+  get(k, d=null){ const db=this.read(); return db[k]!==undefined?db[k]:d; },
+  set(k,v)      { const db=this.read(); db[k]=v; this.write(db); },
+  del(k)        { const db=this.read(); delete db[k]; this.write(db); },
 
-  getPoints(id)           { return this.get(`pts_${id}`, 0); },
-  addPoints(id, n)        { this.set(`pts_${id}`, this.getPoints(id) + n); },
-  removePoints(id, n)     { this.set(`pts_${id}`, Math.max(0, this.getPoints(id) - n)); },
-  setPoints(id, n)        { this.set(`pts_${id}`, n); },
+  getPoints(id)         { return this.get(`pts_${id}`, 0); },
+  addPoints(id,n)       { this.set(`pts_${id}`, this.getPoints(id)+n); },
+  removePoints(id,n)    { this.set(`pts_${id}`, Math.max(0,this.getPoints(id)-n)); },
+  getGens(id)           { return this.get(`gen_${id}`, 0); },
+  incGens(id)           { this.set(`gen_${id}`, this.getGens(id)+1); },
+  resetUser(id)         { this.del(`pts_${id}`); this.del(`gen_${id}`); },
+  getCooldown(id,cmd)   { return this.get(`cd_${cmd}_${id}`, null); },
+  setCooldown(id,cmd,t) { this.set(`cd_${cmd}_${id}`, t); },
 
-  getInvites(id)          { return this.get(`inv_${id}`, 0); },
-  addInvites(id, n)       { this.set(`inv_${id}`, this.getInvites(id) + n); },
+  // Ticket system
+  getTicketConfig(guildId)    { return this.get(`tkt_config_${guildId}`, null); },
+  setTicketConfig(guildId, v) { this.set(`tkt_config_${guildId}`, v); },
+  getTicket(channelId)        { return this.get(`tkt_${channelId}`, null); },
+  setTicket(channelId, v)     { this.set(`tkt_${channelId}`, v); },
+  delTicket(channelId)        { this.del(`tkt_${channelId}`); },
+  getTicketCount(guildId)     { return this.get(`tkt_count_${guildId}`, 0); },
+  incTicketCount(guildId)     { const n=this.getTicketCount(guildId)+1; this.set(`tkt_count_${guildId}`,n); return n; },
 
-  getGens(id)             { return this.get(`gen_${id}`, 0); },
-  incGens(id)             { this.set(`gen_${id}`, this.getGens(id) + 1); },
-
-  resetUser(id)           { this.del(`pts_${id}`); this.del(`inv_${id}`); this.del(`gen_${id}`); },
-
-  getCooldown(id, cmd)    { return this.get(`cd_${cmd}_${id}`, null); },
-  setCooldown(id, cmd, t) { this.set(`cd_${cmd}_${id}`, t); }
+  // Logs config
+  getLogsConfig(guildId)    { return this.get(`logs_${guildId}`, null); },
+  setLogsConfig(guildId, v) { this.set(`logs_${guildId}`, v); }
 };
 
 // ═══════════════════════════════════════════════════════════
-//  SESSIONS QUESTIONNAIRE
+//  SESSIONS
 // ═══════════════════════════════════════════════════════════
 const sessions = new Map();
 
 const STEPS = [
-  { key: 'serverName',  q: 'Quel est le **nom** de votre serveur ?',              type: 'text' },
-  { key: 'theme',       q: 'Quel est le **thème** principal ?',                    type: 'text' },
-  { key: 'members',     q: 'Combien de **membres** prévus ?',                      type: 'text' },
-  { key: 'language',    q: 'Quelle est la **langue** principale ?',                type: 'text' },
-  { key: 'rolesCount',  q: 'Combien de **rôles** souhaitez-vous ? (3-10)',         type: 'text' },
-  { key: 'style',       q: 'Quel est le **style** de votre serveur ?',             type: 'select_style' },
-  { key: 'features',    q: 'Quelles **fonctionnalités** souhaitez-vous ?',         type: 'select_features' },
-  { key: 'finish',      q: 'Quel **niveau de finition** souhaitez-vous ?',         type: 'select_finish' },
-  { key: 'colors',      q: 'Quelles sont les **couleurs dominantes** ?',           type: 'text' },
-  { key: 'founder',     q: 'Quel est le **nom du fondateur** ?',                   type: 'text' }
+  { key: 'serverName', q: 'Quel est le **nom** de votre serveur ?',            type: 'text' },
+  { key: 'theme',      q: 'Quel est le **thème / domaine** principal ?',        type: 'text' },
+  { key: 'members',    q: 'Combien de **membres** prévus ?',                    type: 'text' },
+  { key: 'language',   q: 'Quelle est la **langue** principale ?',              type: 'text' },
+  { key: 'rolesCount', q: 'Combien de **rôles** souhaitez-vous ? (3-10)',       type: 'text' },
+  { key: 'style',      q: 'Quel est le **style** de votre serveur ?',           type: 'select_style' },
+  { key: 'features',   q: 'Quelles **fonctionnalités** souhaitez-vous ?',       type: 'select_features' },
+  { key: 'finish',     q: 'Quel **niveau de finition** souhaitez-vous ?',       type: 'select_finish' },
+  { key: 'colors',     q: 'Quelles sont les **couleurs / ambiance** ?',         type: 'text' },
+  { key: 'founder',    q: 'Quel est le **nom du fondateur** ?',                 type: 'text' }
 ];
+
+// ═══════════════════════════════════════════════════════════
+//  CLAUDE API — génération unique du plan serveur
+// ═══════════════════════════════════════════════════════════
+async function generateServerPlan(data) {
+  if (!CONFIG.anthropicKey) return null;
+
+  const features = Array.isArray(data.features) ? data.features.join(', ') : data.features;
+  const prompt = `Tu es un expert en création de serveurs Discord. Génère un plan de serveur Discord UNIQUE et CRÉATIF basé sur ces informations :
+
+- Nom : ${data.serverName}
+- Thème : ${data.theme}
+- Membres prévus : ${data.members}
+- Langue : ${data.language}
+- Rôles souhaités : ${data.rolesCount}
+- Style : ${data.style}
+- Fonctionnalités : ${features}
+- Finition : ${data.finish}
+- Couleurs/Ambiance : ${data.colors}
+- Fondateur : ${data.founder}
+
+Réponds UNIQUEMENT en JSON valide avec cette structure :
+{
+  "welcomeMessage": "message de bienvenue personnalisé et accrocheur (2-3 phrases)",
+  "rulesText": "règlement adapté au thème (5 règles numérotées)",
+  "categoryNames": ["nom catégorie 1", "nom catégorie 2", ...],
+  "channelTopics": {
+    "general": "topic du salon général adapté au thème",
+    "off-topic": "topic off-topic fun",
+    "announcements": "topic annonces"
+  },
+  "customRoles": ["Rôle 1 thématique", "Rôle 2 thématique"],
+  "serverDescription": "description courte du serveur (1 phrase)",
+  "welcomeEmbed": {
+    "title": "titre embed de bienvenue",
+    "description": "description embed de bienvenue avec infos utiles"
+  }
+}`;
+
+  try {
+    const res = await axios.post('https://api.anthropic.com/v1/messages', {
+      model: 'claude-opus-4-20250514',
+      max_tokens: 1200,
+      messages: [{ role: 'user', content: prompt }]
+    }, {
+      headers: {
+        'x-api-key': CONFIG.anthropicKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
+      timeout: 30000
+    });
+
+    const text = res.data.content[0].text;
+    const json = text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
+    return JSON.parse(json);
+  } catch(e) {
+    console.error('Claude API error:', e.message);
+    return null;
+  }
+}
 
 // ═══════════════════════════════════════════════════════════
 //  EMBEDS
@@ -120,19 +172,24 @@ function embedQuestion(step, total, stepObj) {
 }
 
 function embedPanel(client) {
+  const clientId = client.user.id;
+  const botInvite = `https://discord.com/oauth2/authorize?client_id=${clientId}&permissions=8&scope=bot%20applications.commands`;
+
   return new EmbedBuilder()
     .setColor(CONFIG.color)
     .setTitle('◈  Generate')
     .setDescription(
-      '```\nGénère un serveur Discord complet et personnalisé.\n```\n' +
-      '**Catégories  •  Salons  •  Rôles  •  Règles  •  Bienvenue**\n\n' +
+      '```\nGénère un serveur Discord complet, unique et personnalisé grâce à l\'IA.\n```\n' +
+      '**Catégories  •  Salons  •  Rôles  •  Tickets  •  Logs  •  Règlement**\n\n' +
       '─────────────────────────────\n' +
-      '**〔 Accès 〕**\n' +
-      `> Rejoins : [discord.gg/2PvXETvFFG](${CONFIG.supportInvite})\n` +
-      '> `1 invitation = 1 crédit = 1 génération`\n\n' +
+      '**〔 Comment ça marche 〕**\n' +
+      '> 1. Ajoute le bot sur ton serveur via le bouton ci-dessous\n' +
+      '> 2. Lance `+generate` ici pour configurer\n' +
+      '> 3. Choisis le serveur cible\n' +
+      '> 4. Réponds aux questions → ton serveur est généré !\n\n' +
       '─────────────────────────────\n' +
-      '**〔 Utilisation 〕**\n' +
-      '> `+generate` → Questions en DM → Serveur construit automatiquement'
+      '**〔 Powered by 〕**\n' +
+      '> Claude AI — chaque serveur est **100% unique**'
     )
     .setThumbnail(client.user.displayAvatarURL({ size: 256 }))
     .setFooter({ text: 'Generate  •  Serveur professionnel en quelques minutes' })
@@ -162,11 +219,28 @@ function embedSummary(data) {
     .setTimestamp();
 }
 
+function embedGuildSelect(guilds) {
+  const list = guilds.map((g,i) => `> \`${i+1}.\` **${g.name}** — ${g.memberCount} membres`).join('\n');
+  return new EmbedBuilder()
+    .setColor(CONFIG.color)
+    .setTitle('◈  Choisir le serveur cible')
+    .setDescription(
+      '**Sur quel serveur veux-tu générer la structure ?**\n\n' +
+      list + '\n\n' +
+      '─────────────────────────────\n' +
+      '> ⚠️ **Attention :** Tous les salons et rôles existants seront **supprimés et remplacés**.'
+    )
+    .setFooter({ text: 'Generate  •  Sélectionne un serveur' })
+    .setTimestamp();
+}
+
 // ─── Composants ────────────────────────────────────────────
-function rowPanelButtons() {
+function rowPanelButtons(clientId) {
+  const botInvite = `https://discord.com/oauth2/authorize?client_id=${clientId}&permissions=8&scope=bot%20applications.commands`;
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setLabel('Support').setEmoji('🔗').setStyle(ButtonStyle.Link).setURL(CONFIG.supportInvite),
-    new ButtonBuilder().setCustomId('btn_start').setLabel('Générer un serveur').setEmoji('⚡').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setLabel('Ajouter le bot').setEmoji('🤖').setStyle(ButtonStyle.Link).setURL(botInvite),
+    new ButtonBuilder().setCustomId('btn_start').setLabel('Générer un serveur').setEmoji('⚡').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setLabel('Support').setEmoji('🔗').setStyle(ButtonStyle.Link).setURL(CONFIG.supportInvite)
   );
 }
 
@@ -212,9 +286,9 @@ function rowFeatures() {
 function rowFinish() {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder().setCustomId('sel_finish').setPlaceholder('Niveau de finition...').addOptions([
-      { label: 'Simple',       value: 'simple', emoji: '⚪', description: 'Essentiel uniquement' },
-      { label: 'Avancé',       value: 'avance', emoji: '🔵', description: 'Configuration complète' },
-      { label: 'Ultra Premium',value: 'ultra',  emoji: '🟣', description: 'Setup complet premium' }
+      { label: 'Simple',        value: 'simple', emoji: '⚪', description: 'Essentiel uniquement' },
+      { label: 'Avancé',        value: 'avance', emoji: '🔵', description: 'Configuration complète' },
+      { label: 'Ultra Premium', value: 'ultra',  emoji: '🟣', description: 'Setup complet premium' }
     ])
   );
 }
@@ -224,6 +298,21 @@ function getRowForStep(step) {
   if (step.type === 'select_features') return [rowFeatures()];
   if (step.type === 'select_finish')   return [rowFinish()];
   return [];
+}
+
+function rowGuildSelect(guilds) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('sel_guild')
+      .setPlaceholder('Choisir un serveur...')
+      .addOptions(
+        guilds.slice(0, 25).map(g => ({
+          label: g.name.slice(0, 100),
+          value: g.id,
+          description: `${g.memberCount} membres`
+        }))
+      )
+  );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -242,27 +331,35 @@ const STYLE_EMOJIS = {
   autre:      { g: '💬', v: '🔊', n: '📢' }
 };
 
-async function buildServer(guild, data) {
-  const stats    = { categories: 0, channels: 0, roles: 0 };
+async function buildServer(guild, data, plan) {
+  const stats    = { categories: 0, channels: 0, roles: 0, configured: 0 };
   const em       = STYLE_EMOJIS[data.style] || STYLE_EMOJIS.autre;
   const features = Array.isArray(data.features) ? data.features : [data.features];
   const isAdv    = data.finish === 'avance' || data.finish === 'ultra';
   const isUltra  = data.finish === 'ultra';
   const everyoneId = guild.roles.everyone.id;
+  const channelRefs = {};
 
   // 1. Nettoyage
-  for (const ch of guild.channels.cache.values()) { try { await ch.delete(); } catch {} await sleep(300); }
-  for (const r  of guild.roles.cache.values())    { if (r.id === guild.id || r.managed) continue; try { await r.delete(); } catch {} await sleep(300); }
+  for (const ch of guild.channels.cache.values()) { try { await ch.delete(); } catch {} await sleep(250); }
+  for (const r  of guild.roles.cache.values())    { if (r.id === guild.id || r.managed) continue; try { await r.delete(); } catch {} await sleep(250); }
 
   // 2. Rôles
-const useColors = features.includes('colored_roles');
+  const useColors = features.includes('colored_roles');
 
   const roleDefs = [
     { key: 'admin',   name: '『👑』Administration', color: useColors ? 0xFF6B6B : 0x000000, hoist: true,  perms: [PermissionFlagsBits.Administrator] },
-    { key: 'mod',     name: '『🛡️』Modérateur',     color: useColors ? 0x4ECDC4 : 0x000000, hoist: true,  perms: [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.KickMembers] },
+    { key: 'mod',     name: '『🛡️』Modérateur',    color: useColors ? 0x4ECDC4 : 0x000000, hoist: true,  perms: [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.KickMembers, PermissionFlagsBits.BanMembers] },
     { key: 'member',  name: '『👤』Membre',          color: 0x000000,                         hoist: false, perms: [] },
     { key: 'newbie',  name: '『🌱』Nouveau',         color: 0x000000,                         hoist: false, perms: [] }
   ];
+
+  // Rôles custom générés par l'IA
+  if (plan?.customRoles?.length) {
+    for (const rName of plan.customRoles.slice(0, 3)) {
+      roleDefs.splice(2, 0, { key: `custom_${rName}`, name: rName, color: 0x000000, hoist: false, perms: [] });
+    }
+  }
 
   if (features.includes('staff'))     roleDefs.splice(2, 0, { key: 'staff',   name: '『⚔️』Staff',    color: useColors ? 0xA8E6CF : 0x000000, hoist: true,  perms: [PermissionFlagsBits.ManageMessages] });
   if (features.includes('boosters'))  roleDefs.push(        { key: 'booster', name: '『💎』Booster',  color: useColors ? 0xF8B500 : 0x000000, hoist: false, perms: [] });
@@ -271,33 +368,14 @@ const useColors = features.includes('colored_roles');
   const roles = {};
   for (const def of roleDefs) {
     roles[def.key] = await guild.roles.create({
-      name: def.name,
-      color: def.color,
-      hoist: def.hoist,
-      permissions: def.perms,
-      reason: 'Generate'
+      name: def.name, color: def.color, hoist: def.hoist,
+      permissions: def.perms, reason: 'Generate'
     });
     stats.roles++;
-    await sleep(400);
+    await sleep(350);
   }
 
-  // ─── Helper créer salon texte ───────────────────────────
-  async function makeTxt(name, parent, canSend = true, viewRoleId = everyoneId) {
-    await guild.channels.create({
-      name,
-      type: ChannelType.GuildText,
-      parent: parent?.id,
-      permissionOverwrites: [{
-        id: viewRoleId,
-        allow: [PermissionFlagsBits.ViewChannel, ...(canSend ? [PermissionFlagsBits.SendMessages] : [])],
-        deny:  canSend ? [] : [PermissionFlagsBits.SendMessages]
-      }],
-      reason: 'Generate'
-    });
-    stats.channels++;
-    await sleep(400);
-  }
-
+  // ─── Helpers ───────────────────────────────────────────
   async function makeCat(name, hidden = false, allowRoleId = null) {
     const overw = hidden
       ? [{ id: everyoneId, deny: [PermissionFlagsBits.ViewChannel] },
@@ -305,27 +383,108 @@ const useColors = features.includes('colored_roles');
       : [];
     const cat = await guild.channels.create({ name, type: ChannelType.GuildCategory, permissionOverwrites: overw, reason: 'Generate' });
     stats.categories++;
-    await sleep(300);
+    await sleep(250);
     return cat;
   }
 
-  // 3. Catégories & salons
+  async function makeTxt(name, parent, opts = {}) {
+    const {
+      canSend    = true,
+      viewRoleId = everyoneId,
+      topic      = null,
+      slowmode   = 0,
+      nsfw       = false,
+      readOnly   = false
+    } = opts;
+
+    const ch = await guild.channels.create({
+      name,
+      type: ChannelType.GuildText,
+      parent: parent?.id,
+      topic: topic || undefined,
+      rateLimitPerUser: slowmode,
+      nsfw,
+      permissionOverwrites: [{
+        id: viewRoleId,
+        allow: [PermissionFlagsBits.ViewChannel, ...(canSend && !readOnly ? [PermissionFlagsBits.SendMessages] : [])],
+        deny:  readOnly ? [PermissionFlagsBits.SendMessages] : []
+      }],
+      reason: 'Generate'
+    });
+    stats.channels++;
+    await sleep(350);
+    return ch;
+  }
+
+  async function makeVoice(name, parent, limit = 0) {
+    await guild.channels.create({
+      name, type: ChannelType.GuildVoice, parent: parent?.id,
+      userLimit: limit, reason: 'Generate'
+    });
+    stats.channels++;
+    await sleep(350);
+  }
+
+  // 3. CATÉGORIES & SALONS
+
   // ─── INFO ──────────────────────────────────────────────
   if (features.includes('announcements') || features.includes('rules') || features.includes('presentation')) {
     const cat = await makeCat('─── ◈ Information ───');
-    if (features.includes('announcements')) await makeTxt(`『📢』annonces`,     cat, false);
-    if (features.includes('rules'))         await makeTxt(`『📜』règlement`,    cat, false);
-    if (features.includes('presentation'))  await makeTxt(`『👤』présentations`,cat, true);
-    if (isAdv)                              await makeTxt(`『📅』événements`,   cat, false);
+    if (features.includes('announcements')) {
+      const ch = await makeTxt(`『📢』annonces`, cat, {
+        canSend: false, readOnly: true,
+        topic: plan?.channelTopics?.announcements || 'Retrouvez toutes les annonces officielles ici.'
+      });
+      channelRefs.announcements = ch;
+    }
+    if (features.includes('rules')) {
+      const ch = await makeTxt(`『📜』règlement`, cat, {
+        canSend: false, readOnly: true,
+        topic: 'Lisez et respectez le règlement du serveur.'
+      });
+      channelRefs.rules = ch;
+    }
+    if (features.includes('presentation')) {
+      await makeTxt(`『👤』présentations`, cat, {
+        topic: 'Présente-toi à la communauté !', slowmode: 300
+      });
+    }
+    if (isAdv) {
+      await makeTxt(`『📅』événements`, cat, {
+        canSend: false, readOnly: true,
+        topic: 'Tous les événements à venir.'
+      });
+    }
   }
 
   // ─── GÉNÉRAL ───────────────────────────────────────────
   const catGen = await makeCat('─── ◈ Général ───');
-  await makeTxt(`『${em.g}』général`,   catGen, true);
-  await makeTxt(`『💬』off-topic`,       catGen, true);
+  const genCh = await makeTxt(`『${em.g}』général`, catGen, {
+    topic: plan?.channelTopics?.general || `Bienvenue sur ${data.serverName} ! Parlez de tout ici.`,
+    slowmode: 3
+  });
+  channelRefs.general = genCh;
+
+  await makeTxt(`『💬』off-topic`, catGen, {
+    topic: plan?.channelTopics?.['off-topic'] || 'Discussions hors-sujet, détente !',
+    slowmode: 5
+  });
+
   if (isAdv) {
-    await makeTxt(`『😂』memes`,  catGen, true);
-    await makeTxt(`『📸』médias`, catGen, true);
+    await makeTxt(`『😂』memes`, catGen, { topic: 'Partagez vos meilleurs memes !', slowmode: 10 });
+    await makeTxt(`『📸』médias`, catGen, { topic: 'Photos, vidéos, créations...', slowmode: 15 });
+  }
+  if (isUltra) {
+    await makeTxt(`『🎨』créations`, catGen, { topic: 'Partagez vos créations artistiques.', slowmode: 30 });
+  }
+
+  // ─── BIENVENUE ─────────────────────────────────────────
+  if (isAdv) {
+    const catW = await makeCat('─── ◈ Bienvenue ───');
+    const welcomeCh = await makeTxt(`『👋』bienvenue`, catW, { canSend: false, readOnly: true,
+      topic: `Bienvenue sur ${data.serverName} !` });
+    channelRefs.welcome = welcomeCh;
+    await makeTxt(`『🎭』choix-rôles`, catW, { topic: 'Sélectionnez vos rôles ici.', readOnly: false });
   }
 
   // ─── VOCAL ─────────────────────────────────────────────
@@ -333,51 +492,160 @@ const useColors = features.includes('colored_roles');
     const catV = await makeCat('─── ◈ Vocal ───');
     const count = Math.min(Math.max(parseInt(data.rolesCount) || 3, 1), 5);
     for (let i = 1; i <= count; i++) {
-      await guild.channels.create({ name: `『${em.v}』vocal-${i}`, type: ChannelType.GuildVoice, parent: catV.id, reason: 'Generate' });
-      stats.channels++; await sleep(400);
+      await makeVoice(`『${em.v}』Vocal ${i}`, catV);
     }
     if (isAdv) {
-      await guild.channels.create({ name: `『🎙️』lounge`, type: ChannelType.GuildVoice, parent: catV.id, userLimit: 10, reason: 'Generate' });
-      stats.channels++; await sleep(400);
+      await makeVoice(`『🎙️』Lounge`, catV, 10);
+      await makeVoice(`『🎵』Musique`, catV, 20);
+    }
+    if (isUltra) {
+      await makeVoice(`『📞』Privé 1`, catV, 5);
+      await makeVoice(`『📞』Privé 2`, catV, 5);
     }
   }
 
   // ─── TICKETS ───────────────────────────────────────────
   if (features.includes('tickets')) {
     const catT = await makeCat('─── ◈ Support ───');
-    await makeTxt(`『🎫』ouvrir-un-ticket`, catT, false);
-    if (isAdv) await makeTxt(`『📋』tickets-en-cours`, catT, false, roles.admin?.id || everyoneId);
+    const ticketPanel = await makeTxt(`『🎫』ouvrir-un-ticket`, catT, {
+      readOnly: true, topic: 'Cliquez sur le bouton ci-dessous pour ouvrir un ticket.'
+    });
+    channelRefs.ticketPanel = ticketPanel;
+
+    if (isAdv) {
+      const ticketLog = await makeTxt(`『📋』historique-tickets`, catT, {
+        readOnly: true,
+        viewRoleId: roles.mod?.id || everyoneId
+      });
+      channelRefs.ticketLog = ticketLog;
+    }
+
+    // Sauvegarder config tickets
+    DB.setTicketConfig(guild.id, {
+      panelChannelId: ticketPanel.id,
+      logChannelId:   channelRefs.ticketLog?.id || null,
+      modRoleId:      roles.mod?.id || null,
+      adminRoleId:    roles.admin?.id || null
+    });
   }
 
   // ─── LOGS ──────────────────────────────────────────────
-  if (features.includes('logs') && isAdv) {
+  if (features.includes('logs')) {
     const catL = await makeCat('─── ◈ Logs ───', true, roles.admin?.id);
-    await makeTxt(`『📋』logs-membres`,     catL, false, roles.admin?.id || everyoneId);
-    await makeTxt(`『🔨』logs-modération`,  catL, false, roles.admin?.id || everyoneId);
-    if (isUltra) await makeTxt(`『⚙️』logs-serveur`, catL, false, roles.admin?.id || everyoneId);
+
+    const logJoin  = await makeTxt(`『✅』logs-arrivées`,    catL, { readOnly: true, viewRoleId: roles.admin?.id || everyoneId });
+    const logLeave = await makeTxt(`『❌』logs-départs`,     catL, { readOnly: true, viewRoleId: roles.admin?.id || everyoneId });
+    const logMod   = await makeTxt(`『🔨』logs-modération`,  catL, { readOnly: true, viewRoleId: roles.admin?.id || everyoneId });
+    const logMsg   = isAdv ? await makeTxt(`『💬』logs-messages`, catL, { readOnly: true, viewRoleId: roles.admin?.id || everyoneId }) : null;
+    const logSrv   = isUltra ? await makeTxt(`『⚙️』logs-serveur`, catL, { readOnly: true, viewRoleId: roles.admin?.id || everyoneId }) : null;
+
+    DB.setLogsConfig(guild.id, {
+      joinChannelId:  logJoin.id,
+      leaveChannelId: logLeave.id,
+      modChannelId:   logMod.id,
+      msgChannelId:   logMsg?.id  || null,
+      srvChannelId:   logSrv?.id  || null
+    });
   }
 
   // ─── STAFF ─────────────────────────────────────────────
   if (features.includes('staff') && isAdv) {
-    const catS = await makeCat('─── ◈ Staff ───', true, roles.admin?.id);
-    await makeTxt(`『👑』staff-général`, catS, true, roles.admin?.id || everyoneId);
-    await makeTxt(`『📝』réunions`,      catS, true, roles.admin?.id || everyoneId);
+    const catS = await makeCat('─── ◈ Staff ───', true, roles.staff?.id || roles.admin?.id);
+    await makeTxt(`『👑』staff-général`, catS, { viewRoleId: roles.admin?.id || everyoneId, topic: 'Discussions internes au staff.' });
+    await makeTxt(`『📝』réunions`,      catS, { viewRoleId: roles.admin?.id || everyoneId, topic: 'Comptes-rendus de réunions.' });
+    if (isUltra) {
+      await makeTxt(`『🔔』alertes`,     catS, { readOnly: true, viewRoleId: roles.staff?.id || roles.admin?.id || everyoneId });
+    }
   }
 
   // ─── BOOSTERS ──────────────────────────────────────────
   if (features.includes('boosters') && isUltra && roles.booster) {
     const catB = await makeCat('─── ◈ Boosters ───', true, roles.booster.id);
-    await makeTxt(`『💎』salon-boosters`, catB, true, roles.booster.id);
+    await makeTxt(`『💎』salon-boosters`, catB, { viewRoleId: roles.booster.id, topic: 'Salon exclusif pour les boosters !' });
   }
 
   // ─── GIVEAWAYS ─────────────────────────────────────────
   if (features.includes('giveaways') && isAdv) {
     const catG = await makeCat('─── ◈ Giveaways ───');
-    await makeTxt(`『🎁』giveaways`, catG, false);
-    await makeTxt(`『🏆』gagnants`,  catG, false);
+    await makeTxt(`『🎁』giveaways`, catG, { readOnly: true, topic: 'Participe aux giveaways !' });
+    await makeTxt(`『🏆』gagnants`,  catG, { readOnly: true, topic: 'Félicitations aux gagnants !' });
   }
 
-  return stats;
+  // 4. POST-SETUP : envoyer les messages dans les salons configurés
+
+  // ─── Règlement ─────────────────────────────────────────
+  if (channelRefs.rules && plan?.rulesText) {
+    try {
+      const rulesEmbed = new EmbedBuilder()
+        .setColor(CONFIG.color)
+        .setTitle(`📜  Règlement — ${data.serverName}`)
+        .setDescription(plan.rulesText)
+        .setFooter({ text: `${data.serverName}  •  Tout le monde doit respecter ces règles` })
+        .setTimestamp();
+      await channelRefs.rules.send({ embeds: [rulesEmbed] });
+      stats.configured++;
+    } catch(e) { console.error('Rules msg error:', e.message); }
+  }
+
+  // ─── Bienvenue ─────────────────────────────────────────
+  if (channelRefs.welcome) {
+    try {
+      const wEmbed = new EmbedBuilder()
+        .setColor(CONFIG.color)
+        .setTitle(plan?.welcomeEmbed?.title || `👋  Bienvenue sur ${data.serverName} !`)
+        .setDescription(plan?.welcomeEmbed?.description || plan?.welcomeMessage || `Bienvenue ! Prends le temps de lire le règlement.`)
+        .addFields(
+          { name: '📜 Règlement', value: channelRefs.rules ? `<#${channelRefs.rules.id}>` : 'Lis le règlement !', inline: true },
+          { name: '💬 Général',   value: channelRefs.general ? `<#${channelRefs.general.id}>` : 'Rejoins la discussion !', inline: true }
+        )
+        .setFooter({ text: `${data.serverName}  •  Fondé par ${data.founder}` })
+        .setTimestamp();
+      await channelRefs.welcome.send({ embeds: [wEmbed] });
+      stats.configured++;
+    } catch(e) { console.error('Welcome msg error:', e.message); }
+  }
+
+  // ─── Ticket Panel ──────────────────────────────────────
+  if (channelRefs.ticketPanel) {
+    try {
+      const tEmbed = new EmbedBuilder()
+        .setColor(CONFIG.color)
+        .setTitle('🎫  Système de Tickets')
+        .setDescription(
+          '> Besoin d\'aide ou d\'assistance ?\n' +
+          '> Clique sur le bouton ci-dessous pour **ouvrir un ticket** privé.\n\n' +
+          '```\n📋 Un membre du staff vous répondra rapidement.\n```'
+        )
+        .setFooter({ text: `${data.serverName}  •  Support` })
+        .setTimestamp();
+
+      const tRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('ticket_open')
+          .setLabel('Ouvrir un ticket')
+          .setEmoji('🎫')
+          .setStyle(ButtonStyle.Secondary)
+      );
+      await channelRefs.ticketPanel.send({ embeds: [tEmbed], components: [tRow] });
+      stats.configured++;
+    } catch(e) { console.error('Ticket panel error:', e.message); }
+  }
+
+  // ─── Général : message de lancement ────────────────────
+  if (channelRefs.general) {
+    try {
+      const launchEmbed = new EmbedBuilder()
+        .setColor(CONFIG.color)
+        .setTitle(`🚀  ${data.serverName} est maintenant en ligne !`)
+        .setDescription(plan?.serverDescription || `Bienvenue sur **${data.serverName}** — le serveur est prêt, profitez-en !`)
+        .setFooter({ text: `Généré par Generate  •  IA Claude` })
+        .setTimestamp();
+      await channelRefs.general.send({ embeds: [launchEmbed] });
+      stats.configured++;
+    } catch(e) { console.error('Launch msg error:', e.message); }
+  }
+
+  return { stats, channelRefs, roles };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -390,9 +658,10 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildInvites,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildModeration
   ],
-  partials: [Partials.Channel, Partials.Message, Partials.User]
+  partials: [Partials.Channel, Partials.Message, Partials.User, Partials.GuildMember]
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -400,11 +669,115 @@ const client = new Client({
 // ═══════════════════════════════════════════════════════════
 client.once('ready', () => {
   console.log(`✅ ${client.user.tag} est en ligne !`);
-  client.user.setPresence({ activities: [{ name: '+help | Generate', type: 0 }], status: 'dnd' });
+  client.user.setPresence({ activities: [{ name: '+help | Generate by IA', type: 0 }], status: 'dnd' });
 });
 
 // ═══════════════════════════════════════════════════════════
-//  MESSAGE CREATE
+//  LOGS — Membres
+// ═══════════════════════════════════════════════════════════
+client.on('guildMemberAdd', async (member) => {
+  const logsConfig = DB.getLogsConfig(member.guild.id);
+  if (!logsConfig?.joinChannelId) return;
+  try {
+    const ch = await member.guild.channels.fetch(logsConfig.joinChannelId).catch(() => null);
+    if (!ch) return;
+    const embed = new EmbedBuilder()
+      .setColor(0x57F287)
+      .setTitle('✅  Nouveau membre')
+      .setThumbnail(member.user.displayAvatarURL({ size: 128 }))
+      .setDescription(`> ${member} — **${member.user.tag}**`)
+      .addFields(
+        { name: 'Compte créé', value: `<t:${Math.floor(member.user.createdTimestamp/1000)}:R>`, inline: true },
+        { name: 'Membres',     value: `\`${member.guild.memberCount}\``, inline: true }
+      )
+      .setFooter({ text: `ID : ${member.id}` })
+      .setTimestamp();
+    await ch.send({ embeds: [embed] });
+  } catch(e) { console.error('Log join error:', e.message); }
+});
+
+client.on('guildMemberRemove', async (member) => {
+  const logsConfig = DB.getLogsConfig(member.guild.id);
+  if (!logsConfig?.leaveChannelId) return;
+  try {
+    const ch = await member.guild.channels.fetch(logsConfig.leaveChannelId).catch(() => null);
+    if (!ch) return;
+    const embed = new EmbedBuilder()
+      .setColor(0xED4245)
+      .setTitle('❌  Membre parti')
+      .setThumbnail(member.user.displayAvatarURL({ size: 128 }))
+      .setDescription(`> **${member.user.tag}**`)
+      .addFields(
+        { name: 'Rejoint le', value: member.joinedAt ? `<t:${Math.floor(member.joinedTimestamp/1000)}:R>` : 'Inconnu', inline: true },
+        { name: 'Membres',    value: `\`${member.guild.memberCount}\``, inline: true }
+      )
+      .setFooter({ text: `ID : ${member.id}` })
+      .setTimestamp();
+    await ch.send({ embeds: [embed] });
+  } catch(e) { console.error('Log leave error:', e.message); }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  LOGS — Messages supprimés
+// ═══════════════════════════════════════════════════════════
+client.on('messageDelete', async (message) => {
+  if (!message.guild || message.author?.bot) return;
+  const logsConfig = DB.getLogsConfig(message.guild.id);
+  if (!logsConfig?.msgChannelId) return;
+  try {
+    const ch = await message.guild.channels.fetch(logsConfig.msgChannelId).catch(() => null);
+    if (!ch) return;
+    const embed = new EmbedBuilder()
+      .setColor(0xFEE75C)
+      .setTitle('💬  Message supprimé')
+      .setDescription(
+        `> **Auteur :** ${message.author || 'Inconnu'}\n` +
+        `> **Salon :** ${message.channel}\n` +
+        `> **Contenu :** ${(message.content || '*Message sans texte*').slice(0, 1000)}`
+      )
+      .setFooter({ text: `ID message : ${message.id}` })
+      .setTimestamp();
+    await ch.send({ embeds: [embed] });
+  } catch(e) { console.error('Log msg delete error:', e.message); }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  LOGS — Bans / Unbans
+// ═══════════════════════════════════════════════════════════
+client.on('guildBanAdd', async (ban) => {
+  const logsConfig = DB.getLogsConfig(ban.guild.id);
+  if (!logsConfig?.modChannelId) return;
+  try {
+    const ch = await ban.guild.channels.fetch(logsConfig.modChannelId).catch(() => null);
+    if (!ch) return;
+    const embed = new EmbedBuilder()
+      .setColor(0xED4245)
+      .setTitle('🔨  Membre banni')
+      .setDescription(`> **Utilisateur :** ${ban.user.tag}\n> **Raison :** ${ban.reason || 'Aucune raison'}`)
+      .setFooter({ text: `ID : ${ban.user.id}` })
+      .setTimestamp();
+    await ch.send({ embeds: [embed] });
+  } catch(e) { console.error('Log ban error:', e.message); }
+});
+
+client.on('guildBanRemove', async (ban) => {
+  const logsConfig = DB.getLogsConfig(ban.guild.id);
+  if (!logsConfig?.modChannelId) return;
+  try {
+    const ch = await ban.guild.channels.fetch(logsConfig.modChannelId).catch(() => null);
+    if (!ch) return;
+    const embed = new EmbedBuilder()
+      .setColor(0x57F287)
+      .setTitle('✅  Ban levé')
+      .setDescription(`> **Utilisateur :** ${ban.user.tag}`)
+      .setFooter({ text: `ID : ${ban.user.id}` })
+      .setTimestamp();
+    await ch.send({ embeds: [embed] });
+  } catch(e) { console.error('Log unban error:', e.message); }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  MESSAGE CREATE — Commandes (OWNER ONLY)
 // ═══════════════════════════════════════════════════════════
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
@@ -413,6 +786,7 @@ client.on('messageCreate', async (message) => {
   if (!message.guild) {
     const session = sessions.get(message.author.id);
     if (!session) return;
+    if (session.awaitingGuild) return; // On attend une selection de guild
     const step = STEPS[session.step];
     if (!step || step.type !== 'text') return;
 
@@ -424,18 +798,25 @@ client.on('messageCreate', async (message) => {
     }
 
     const nextStep = STEPS[session.step];
-    const embed    = embedQuestion(session.step + 1, STEPS.length, nextStep);
-    return message.reply({ embeds: [embed], components: getRowForStep(nextStep) });
+    return message.reply({
+      embeds: [embedQuestion(session.step + 1, STEPS.length, nextStep)],
+      components: getRowForStep(nextStep)
+    });
   }
 
-  // ─── Commandes ────────────────────────────────────────────
+  // ─── OWNER ONLY : vérification ────────────────────────────
+  if (message.author.id !== CONFIG.ownerId) return;
+
   if (!message.content.startsWith(CONFIG.prefix)) return;
   const args = message.content.slice(CONFIG.prefix.length).trim().split(/ +/);
   const cmd  = args.shift().toLowerCase();
 
   // ── +help ─────────────────────────────────────────────────
   if (cmd === 'help') {
-    return message.channel.send({ embeds: [embedPanel(client)], components: [rowPanelButtons()] });
+    return message.channel.send({
+      embeds: [embedPanel(client)],
+      components: [rowPanelButtons(client.user.id)]
+    });
   }
 
   // ── +points ───────────────────────────────────────────────
@@ -443,16 +824,7 @@ client.on('messageCreate', async (message) => {
     const pts  = DB.getPoints(message.author.id);
     const gens = DB.getGens(message.author.id);
     return message.reply({ embeds: [embedBase('◈  Vos crédits',
-      `> 🪙 **Crédits :** \`${pts}\`\n> ⚡ **Générations :** \`${gens}\`\n\n> *1 invitation = 1 crédit*`
-    )] });
-  }
-
-  // ── +invites ──────────────────────────────────────────────
-  if (cmd === 'invites') {
-    const inv = DB.getInvites(message.author.id);
-    const pts = DB.getPoints(message.author.id);
-    return message.reply({ embeds: [embedBase('◈  Vos invitations',
-      `> 🔗 **Invitations :** \`${inv}\`\n> 🪙 **Crédits :** \`${pts}\`\n\n> Invite sur [le serveur officiel](${CONFIG.supportInvite})`
+      `> 🪙 **Crédits :** \`${pts}\`\n> ⚡ **Générations :** \`${gens}\``
     )] });
   }
 
@@ -461,37 +833,35 @@ client.on('messageCreate', async (message) => {
     if (sessions.has(message.author.id))
       return message.reply({ embeds: [embedWarn('Session active', '> Tu as déjà un questionnaire en cours dans tes DMs.')] });
 
-    if (message.author.id !== CONFIG.ownerId) {
-      const pts = DB.getPoints(message.author.id);
-      if (pts < 1)
-        return message.reply({ embeds: [embedErr('Crédits insuffisants',
-          `> Tu n'as pas de crédits.\n> **Crédits :** \`${pts}\`\n> Invite des membres pour en obtenir.`
-        )] });
+    // Récupérer les guilds où le bot est présent et où l'utilisateur est admin
+    const userGuilds = client.guilds.cache.filter(g =>
+      g.members.cache.get(message.author.id)?.permissions.has(PermissionFlagsBits.Administrator) ||
+      message.author.id === CONFIG.ownerId
+    );
+
+    if (userGuilds.size === 0) {
+      return message.reply({ embeds: [embedErr('Aucun serveur', '> Le bot n\'est sur aucun serveur où tu es admin.\n> Ajoute-le d\'abord via le bouton dans `+help`.')] });
     }
 
-    const cd = DB.getCooldown(message.author.id, 'generate');
-    if (cd && Date.now() - cd < 30000 && message.author.id !== CONFIG.ownerId) {
-      const left = Math.ceil((30000 - (Date.now() - cd)) / 1000);
-      return message.reply({ embeds: [embedWarn('Cooldown', `> Attends encore **${left}s**.`)] });
-    }
+    // Créer une session en attente de selection de guild
+    sessions.set(message.author.id, { step: 0, data: {}, guildId: null, awaitingGuild: true });
 
-    sessions.set(message.author.id, { step: 0, data: {}, guildId: message.guild.id });
-    DB.setCooldown(message.author.id, 'generate', Date.now());
-
-    const firstStep = STEPS[0];
-    const embed     = embedQuestion(1, STEPS.length, firstStep);
+    const guildsArray = [...userGuilds.values()];
 
     try {
-      await message.author.send({ embeds: [embed], components: getRowForStep(firstStep) });
-      return message.reply({ embeds: [embedOk('Questionnaire envoyé', '> Réponds aux questions dans tes **DMs** !')] });
+      await message.author.send({
+        embeds: [embedGuildSelect(guildsArray)],
+        components: [rowGuildSelect(guildsArray)]
+      });
+      return message.reply({ embeds: [embedOk('Sélection du serveur', '> Choisis le serveur cible dans tes **DMs** !')] });
     } catch {
       sessions.delete(message.author.id);
       return message.reply({ embeds: [embedErr('DMs fermés', '> Active tes messages privés et réessaie.')] });
     }
   }
 
-  // ── OWNER : +addpoints ────────────────────────────────────
-  if (cmd === 'addpoints' && message.author.id === CONFIG.ownerId) {
+  // ── +addpoints ────────────────────────────────────────────
+  if (cmd === 'addpoints') {
     const user   = message.mentions.users.first();
     const amount = parseInt(args[1]);
     if (!user || isNaN(amount)) return message.reply({ embeds: [embedWarn('Usage', '> `+addpoints @user nombre`')] });
@@ -499,8 +869,8 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embedOk('Crédits ajoutés', `> ✅ **+${amount}** crédits → ${user}\n> **Total :** \`${DB.getPoints(user.id)}\``)] });
   }
 
-  // ── OWNER : +removepoints ─────────────────────────────────
-  if (cmd === 'removepoints' && message.author.id === CONFIG.ownerId) {
+  // ── +removepoints ─────────────────────────────────────────
+  if (cmd === 'removepoints') {
     const user   = message.mentions.users.first();
     const amount = parseInt(args[1]);
     if (!user || isNaN(amount)) return message.reply({ embeds: [embedWarn('Usage', '> `+removepoints @user nombre`')] });
@@ -508,20 +878,27 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embedOk('Crédits retirés', `> ✅ **-${amount}** crédits → ${user}\n> **Total :** \`${DB.getPoints(user.id)}\``)] });
   }
 
-  // ── OWNER : +resetuser ────────────────────────────────────
-  if (cmd === 'resetuser' && message.author.id === CONFIG.ownerId) {
+  // ── +resetuser ────────────────────────────────────────────
+  if (cmd === 'resetuser') {
     const user = message.mentions.users.first();
     if (!user) return message.reply({ embeds: [embedWarn('Usage', '> `+resetuser @user`')] });
     DB.resetUser(user.id);
     return message.reply({ embeds: [embedOk('Reset effectué', `> ✅ ${user} a été réinitialisé.`)] });
   }
 
-  // ── OWNER : +forcegenerate ────────────────────────────────
-  if (cmd === 'forcegenerate' && message.author.id === CONFIG.ownerId) {
-    const user = message.mentions.users.first();
-    if (!user) return message.reply({ embeds: [embedWarn('Usage', '> `+forcegenerate @user`')] });
-    DB.addPoints(user.id, 1);
-    return message.reply({ embeds: [embedOk('Génération forcée', `> ✅ 1 crédit ajouté à ${user}.`)] });
+  // ── +setlogs ──────────────────────────────────────────────
+  if (cmd === 'setlogs') {
+    const sub = args[0];
+    const ch  = message.mentions.channels.first();
+    if (!sub || !ch) return message.reply({ embeds: [embedWarn('Usage', '> `+setlogs [join|leave|mod|msg|srv] #salon`')] });
+
+    const current = DB.getLogsConfig(message.guild.id) || {};
+    const keyMap  = { join: 'joinChannelId', leave: 'leaveChannelId', mod: 'modChannelId', msg: 'msgChannelId', srv: 'srvChannelId' };
+    if (!keyMap[sub]) return message.reply({ embeds: [embedWarn('Type invalide', '> Types : `join`, `leave`, `mod`, `msg`, `srv`')] });
+
+    current[keyMap[sub]] = ch.id;
+    DB.setLogsConfig(message.guild.id, current);
+    return message.reply({ embeds: [embedOk('Logs mis à jour', `> ✅ Logs \`${sub}\` → ${ch}`)] });
   }
 });
 
@@ -530,33 +907,62 @@ client.on('messageCreate', async (message) => {
 // ═══════════════════════════════════════════════════════════
 client.on('interactionCreate', async (interaction) => {
 
-  // ─── Bouton : Générer un serveur (panel) ──────────────────
+  // ─── Bouton panel : Générer un serveur ───────────────────
   if (interaction.isButton() && interaction.customId === 'btn_start') {
+    if (interaction.user.id !== CONFIG.ownerId)
+      return interaction.reply({ embeds: [embedErr('Accès refusé', '> Seul le propriétaire peut utiliser cette fonctionnalité.')], ephemeral: true });
+
     if (sessions.has(interaction.user.id))
       return interaction.reply({ embeds: [embedWarn('Session active', '> Tu as déjà un questionnaire en cours dans tes DMs.')], ephemeral: true });
 
-    if (interaction.user.id !== CONFIG.ownerId) {
-      const pts = DB.getPoints(interaction.user.id);
-      if (pts < 1)
-        return interaction.reply({ embeds: [embedErr('Crédits insuffisants', `> Tu n'as pas de crédits.\n> Invite des membres sur le serveur officiel.`)], ephemeral: true });
-    }
+    const userGuilds = client.guilds.cache.filter(g =>
+      g.members.cache.get(interaction.user.id)?.permissions.has(PermissionFlagsBits.Administrator) ||
+      interaction.user.id === CONFIG.ownerId
+    );
 
-    sessions.set(interaction.user.id, { step: 0, data: {}, guildId: interaction.guild?.id });
+    if (userGuilds.size === 0)
+      return interaction.reply({ embeds: [embedErr('Aucun serveur', '> Ajoute d\'abord le bot sur un serveur via le lien d\'invitation.')], ephemeral: true });
 
-    const firstStep = STEPS[0];
-    const embed     = embedQuestion(1, STEPS.length, firstStep);
+    sessions.set(interaction.user.id, { step: 0, data: {}, guildId: null, awaitingGuild: true });
+    const guildsArray = [...userGuilds.values()];
 
     try {
-      await interaction.user.send({ embeds: [embed], components: getRowForStep(firstStep) });
-      return interaction.reply({ embeds: [embedOk('Questionnaire envoyé', '> Réponds aux questions dans tes **DMs** !')], ephemeral: true });
+      await interaction.user.send({
+        embeds: [embedGuildSelect(guildsArray)],
+        components: [rowGuildSelect(guildsArray)]
+      });
+      return interaction.reply({ embeds: [embedOk('Sélection du serveur', '> Choisis le serveur cible dans tes **DMs** !')], ephemeral: true });
     } catch {
       sessions.delete(interaction.user.id);
       return interaction.reply({ embeds: [embedErr('DMs fermés', '> Active tes messages privés.')], ephemeral: true });
     }
   }
 
-  // ─── Select menus (dans DMs) ──────────────────────────────
-  if (interaction.isStringSelectMenu()) {
+  // ─── Select : Choix du serveur cible ────────────────────
+  if (interaction.isStringSelectMenu() && interaction.customId === 'sel_guild') {
+    const session = sessions.get(interaction.user.id);
+    if (!session) return interaction.reply({ content: 'Session expirée.', ephemeral: true });
+
+    session.guildId      = interaction.values[0];
+    session.awaitingGuild = false;
+
+    const guild = client.guilds.cache.get(session.guildId);
+    if (!guild) {
+      sessions.delete(interaction.user.id);
+      return interaction.update({ embeds: [embedErr('Serveur introuvable', '> Impossible de trouver ce serveur.')], components: [] });
+    }
+
+    await interaction.update({ embeds: [embedBase('◈  Serveur sélectionné', `> ✅ Serveur : **${guild.name}**\n\n> Le questionnaire va démarrer...`)], components: [] });
+
+    const firstStep = STEPS[0];
+    return interaction.followUp({
+      embeds: [embedQuestion(1, STEPS.length, firstStep)],
+      components: getRowForStep(firstStep)
+    });
+  }
+
+  // ─── Select menus questionnaire (dans DMs) ───────────────
+  if (interaction.isStringSelectMenu() && ['sel_style','sel_features','sel_finish'].includes(interaction.customId)) {
     const session = sessions.get(interaction.user.id);
     if (!session) return interaction.reply({ content: 'Session expirée.', ephemeral: true });
 
@@ -572,7 +978,10 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     const nextStep = STEPS[session.step];
-    return interaction.followUp({ embeds: [embedQuestion(session.step + 1, STEPS.length, nextStep)], components: getRowForStep(nextStep) });
+    return interaction.followUp({
+      embeds: [embedQuestion(session.step + 1, STEPS.length, nextStep)],
+      components: getRowForStep(nextStep)
+    });
   }
 
   // ─── Bouton : Confirmer génération ───────────────────────
@@ -588,31 +997,48 @@ client.on('interactionCreate', async (interaction) => {
 
     if (!guild.members.me?.permissions.has(PermissionFlagsBits.Administrator)) {
       sessions.delete(interaction.user.id);
-      return interaction.update({ embeds: [embedErr('Permissions manquantes', '> Le bot doit être **Administrateur** sur ton serveur.')], components: [] });
+      return interaction.update({ embeds: [embedErr('Permissions manquantes', '> Le bot doit être **Administrateur** sur le serveur cible.')], components: [] });
     }
 
     await interaction.update({
-      embeds: [embedBase('◈  Génération en cours...', '`▓▓▓▓▓░░░░░` — Construction...\n\n*Patiente quelques secondes.*')],
+      embeds: [embedBase('◈  Génération en cours...', '`▓▓▓▓▓░░░░░` 50% — Construction de la structure...\n\n*Appel à l\'IA Claude pour personnalisation...*')],
       components: []
     });
 
     try {
-      const stats = await buildServer(guild, session.data);
+      // Appel Claude API pour plan unique
+      let plan = null;
+      if (CONFIG.anthropicKey) {
+        await interaction.editReply({
+          embeds: [embedBase('◈  Génération en cours...', '`▓▓▓░░░░░░░` 30% — IA Claude génère un plan unique...\n\n*Personnalisation en cours...*')]
+        });
+        plan = await generateServerPlan(session.data);
+      }
 
-      if (interaction.user.id !== CONFIG.ownerId) DB.removePoints(interaction.user.id, 1);
+      await interaction.editReply({
+        embeds: [embedBase('◈  Génération en cours...', '`▓▓▓▓▓▓░░░░` 60% — Construction des salons et rôles...\n\n*Patiente quelques secondes.*')]
+      });
+
+      const { stats } = await buildServer(guild, session.data, plan);
+
       DB.incGens(interaction.user.id);
       sessions.delete(interaction.user.id);
 
+      const aiNote = plan ? '\n> 🤖 **Plan généré par Claude AI** — serveur 100% unique' : '';
+
       return interaction.editReply({
         embeds: [embedOk('◈  Génération terminée ✓',
-          `**${session.data.serverName}** est prêt !\n\n` +
+          `**${session.data.serverName}** est prêt sur **${guild.name}** !\n\n` +
           `> 📂 **Catégories :** ${stats.categories}\n` +
           `> 💬 **Salons :** ${stats.channels}\n` +
-          `> 🎭 **Rôles :** ${stats.roles}`
+          `> 🎭 **Rôles :** ${stats.roles}\n` +
+          `> ⚙️ **Salons configurés :** ${stats.configured}` +
+          aiNote
         )]
       });
     } catch (err) {
       sessions.delete(interaction.user.id);
+      console.error('Build error:', err);
       return interaction.editReply({ embeds: [embedErr('Erreur', `> \`${err.message}\``)] });
     }
   }
@@ -622,19 +1048,168 @@ client.on('interactionCreate', async (interaction) => {
     sessions.delete(interaction.user.id);
     return interaction.update({ embeds: [embedWarn('Annulé', '> La génération a été annulée.')], components: [] });
   }
+
+  // ═══════════════════════════════════════════════════════
+  //  SYSTÈME TICKETS
+  // ═══════════════════════════════════════════════════════
+
+  // ─── Ouvrir un ticket ────────────────────────────────────
+  if (interaction.isButton() && interaction.customId === 'ticket_open') {
+    const config = DB.getTicketConfig(interaction.guild.id);
+    if (!config) return interaction.reply({ content: 'Système de tickets non configuré.', ephemeral: true });
+
+    // Vérifier si l'user a déjà un ticket ouvert
+    const existing = interaction.guild.channels.cache.find(c =>
+      c.name === `ticket-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '')}` ||
+      (DB.getTicket(c.id)?.userId === interaction.user.id && DB.getTicket(c.id)?.status === 'open')
+    );
+
+    if (existing)
+      return interaction.reply({ embeds: [embedWarn('Ticket existant', `> Tu as déjà un ticket ouvert : ${existing}`)], ephemeral: true });
+
+    await interaction.deferReply({ ephemeral: true });
+
+    const ticketNum = DB.incTicketCount(interaction.guild.id);
+    const everyoneId = interaction.guild.roles.everyone.id;
+
+    const overwrites = [
+      { id: everyoneId, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+    ];
+
+    if (config.modRoleId)   overwrites.push({ id: config.modRoleId,   allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] });
+    if (config.adminRoleId) overwrites.push({ id: config.adminRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] });
+
+    // Trouver la catégorie support
+    const supportCat = interaction.guild.channels.cache.find(c =>
+      c.type === ChannelType.GuildCategory && c.name.toLowerCase().includes('support')
+    );
+
+    const ticketCh = await interaction.guild.channels.create({
+      name: `🎫-ticket-${ticketNum.toString().padStart(4,'0')}`,
+      type: ChannelType.GuildText,
+      parent: supportCat?.id,
+      permissionOverwrites: overwrites,
+      topic: `Ticket de ${interaction.user.tag} — #${ticketNum}`,
+      reason: `Ticket ouvert par ${interaction.user.tag}`
+    });
+
+    DB.setTicket(ticketCh.id, {
+      userId: interaction.user.id,
+      userTag: interaction.user.tag,
+      number: ticketNum,
+      status: 'open',
+      openedAt: Date.now(),
+      claimedBy: null
+    });
+
+    const ticketEmbed = new EmbedBuilder()
+      .setColor(CONFIG.color)
+      .setTitle(`🎫  Ticket #${ticketNum}`)
+      .setDescription(
+        `> Bienvenue ${interaction.user} !\n` +
+        '> Un membre du staff va te répondre sous peu.\n\n' +
+        '> **Décris ton problème ou ta demande ci-dessous.**'
+      )
+      .addFields(
+        { name: 'Ouvert par', value: `${interaction.user}`, inline: true },
+        { name: 'Date',       value: `<t:${Math.floor(Date.now()/1000)}:F>`, inline: true }
+      )
+      .setFooter({ text: 'Generate  •  Support' })
+      .setTimestamp();
+
+    const ticketRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('ticket_close').setLabel('Fermer').setEmoji('🔒').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('ticket_claim').setLabel('Prendre en charge').setEmoji('✋').setStyle(ButtonStyle.Secondary)
+    );
+
+    await ticketCh.send({ content: `${interaction.user}`, embeds: [ticketEmbed], components: [ticketRow] });
+    return interaction.editReply({ embeds: [embedOk('Ticket ouvert', `> ✅ Ton ticket a été créé : ${ticketCh}`)] });
+  }
+
+  // ─── Fermer un ticket ────────────────────────────────────
+  if (interaction.isButton() && interaction.customId === 'ticket_close') {
+    const ticketData = DB.getTicket(interaction.channel.id);
+    if (!ticketData) return interaction.reply({ content: 'Ce salon n\'est pas un ticket.', ephemeral: true });
+
+    const config = DB.getTicketConfig(interaction.guild.id);
+    const isMod  = config?.modRoleId && interaction.member.roles.cache.has(config.modRoleId);
+    const isAdmin = config?.adminRoleId && interaction.member.roles.cache.has(config.adminRoleId);
+    const isOwner = interaction.user.id === ticketData.userId;
+
+    if (!isMod && !isAdmin && !isOwner && interaction.user.id !== CONFIG.ownerId)
+      return interaction.reply({ embeds: [embedErr('Permission refusée', '> Tu ne peux pas fermer ce ticket.')], ephemeral: true });
+
+    await interaction.deferReply();
+
+    // Log du ticket
+    if (config?.logChannelId) {
+      try {
+        const logCh = await interaction.guild.channels.fetch(config.logChannelId).catch(() => null);
+        if (logCh) {
+          const msgs = await interaction.channel.messages.fetch({ limit: 50 }).catch(() => null);
+          const transcript = msgs
+            ? [...msgs.values()].reverse()
+                .filter(m => !m.author.bot)
+                .map(m => `[${new Date(m.createdTimestamp).toLocaleString('fr-FR')}] ${m.author.tag}: ${m.content || '[embed/fichier]'}`)
+                .join('\n')
+                .slice(0, 3000)
+            : 'Aucun message';
+
+          const logEmbed = new EmbedBuilder()
+            .setColor(0xED4245)
+            .setTitle(`🔒  Ticket #${ticketData.number} fermé`)
+            .setDescription(
+              `> **Ouvert par :** ${ticketData.userTag}\n` +
+              `> **Fermé par :** ${interaction.user.tag}\n` +
+              `> **Durée :** ${Math.round((Date.now() - ticketData.openedAt) / 60000)} minutes\n\n` +
+              `**Transcript (50 derniers msgs) :**\n\`\`\`\n${transcript}\n\`\`\``
+            )
+            .setTimestamp();
+          await logCh.send({ embeds: [logEmbed] });
+        }
+      } catch(e) { console.error('Ticket log error:', e.message); }
+    }
+
+    await interaction.editReply({ embeds: [embedWarn('Fermeture', '> Ce ticket sera supprimé dans **5 secondes**...')] });
+    DB.delTicket(interaction.channel.id);
+    await sleep(5000);
+    await interaction.channel.delete('Ticket fermé').catch(() => {});
+  }
+
+  // ─── Prendre en charge un ticket ─────────────────────────
+  if (interaction.isButton() && interaction.customId === 'ticket_claim') {
+    const ticketData = DB.getTicket(interaction.channel.id);
+    if (!ticketData) return interaction.reply({ content: 'Ce salon n\'est pas un ticket.', ephemeral: true });
+
+    const config  = DB.getTicketConfig(interaction.guild.id);
+    const isMod   = config?.modRoleId && interaction.member.roles.cache.has(config.modRoleId);
+    const isAdmin = config?.adminRoleId && interaction.member.roles.cache.has(config.adminRoleId);
+
+    if (!isMod && !isAdmin && interaction.user.id !== CONFIG.ownerId)
+      return interaction.reply({ embeds: [embedErr('Permission refusée', '> Seul le staff peut prendre en charge un ticket.')], ephemeral: true });
+
+    if (ticketData.claimedBy)
+      return interaction.reply({ embeds: [embedWarn('Déjà pris en charge', `> Ce ticket est déjà géré par <@${ticketData.claimedBy}>.`)], ephemeral: true });
+
+    ticketData.claimedBy = interaction.user.id;
+    DB.setTicket(interaction.channel.id, ticketData);
+
+    return interaction.reply({ embeds: [embedOk('Pris en charge', `> ✅ ${interaction.user} prend en charge ce ticket.`)] });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════
 //  ANTI-CRASH
 // ═══════════════════════════════════════════════════════════
-process.on('unhandledRejection', err => console.error('Rejection:', err));
-process.on('uncaughtException',  err => console.error('Exception:', err));
+process.on('unhandledRejection', err => console.error('Rejection:', err?.message || err));
+process.on('uncaughtException',  err => console.error('Exception:', err?.message || err));
 
 // ═══════════════════════════════════════════════════════════
 //  LOGIN
 // ═══════════════════════════════════════════════════════════
 if (!CONFIG.token) {
-  console.error('❌ TOKEN manquant dans les variables Railway');
+  console.error('❌ TOKEN manquant dans les variables d\'environnement');
   process.exit(1);
 }
 
