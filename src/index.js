@@ -906,9 +906,6 @@ client.on('interactionCreate', async (interaction) => {
 
   // ─── Bouton panel : Générer un serveur ───────────────────
   if (interaction.isButton() && interaction.customId === 'btn_start') {
-    if (interaction.user.id !== CONFIG.ownerId)
-      return interaction.reply({ embeds: [embedErr('Accès refusé', '> Seul le propriétaire peut utiliser cette fonctionnalité.')], ephemeral: true });
-
     if (sessions.has(interaction.user.id))
       return interaction.reply({ embeds: [embedWarn('Session active', '> Tu as déjà un questionnaire en cours dans tes DMs.')], ephemeral: true });
 
