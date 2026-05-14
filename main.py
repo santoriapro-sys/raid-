@@ -165,10 +165,70 @@ async def is_on_required_guild(user_id: int) -> bool:
     return False
 
 
+# ─── PERSISTENT VIEW ─────────────────────────────────────────────────────────
+class PersistentEmbedView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Support", style=discord.ButtonStyle.secondary, emoji="🎫", custom_id="persistent_support")
+    async def support_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        e = discord.Embed(
+            description="Pour toute assistance, contacte un membre du staff ou ouvre un ticket sur le serveur officiel.",
+            color=0x2B2D31
+        )
+        await interaction.response.send_message(embed=e, ephemeral=True)
+
+    @discord.ui.button(label="Générer un serveur", style=discord.ButtonStyle.primary, emoji="⚡", custom_id="persistent_generate")
+    async def generate_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user = interaction.user
+
+        if not interaction.guild:
+            e = discord.Embed(description="Utilise cette commande dans un serveur.", color=0xED4245)
+            return await interaction.response.send_message(embed=e, ephemeral=True)
+
+        if not interaction.user.guild_permissions.administrator and interaction.user.id != OWNER_ID:
+            e = discord.Embed(description="Permissions insuffisantes.", color=0xED4245)
+            return await interaction.response.send_message(embed=e, ephemeral=True)
+
+        if not await is_on_required_guild(user.id):
+            e = discord.Embed(description=f"Accès refusé. Rejoins le serveur officiel : {REQUIRED_GUILD_INVITE}", color=0xED4245)
+            return await interaction.response.send_message(embed=e, ephemeral=True)
+
+        udata = get_user(user.id)
+        if udata["points"] <= 0 and user.id != OWNER_ID:
+            e = discord.Embed(
+                description=f"Crédits insuffisants. Invite des membres sur {REQUIRED_GUILD_INVITE} pour en obtenir.\n**Crédits : {udata['points']}**",
+                color=0xED4245
+            )
+            return await interaction.response.send_message(embed=e, ephemeral=True)
+
+        if get_session(user.id):
+            e = discord.Embed(description="Une session est déjà en cours dans tes DMs.", color=0xFEE75C)
+            return await interaction.response.send_message(embed=e, ephemeral=True)
+
+        set_session(user.id, {"guild_id": interaction.guild.id, "step": 0, "answers": {}})
+
+        try:
+            welcome = discord.Embed(
+                title="Generate",
+                description=f"**{len(QUESTIONS)} questions** — Réponds dans ce DM.\n\n⚠️ Tous les salons et rôles existants seront supprimés.\n\n**Crédits :** {'∞' if user.id == OWNER_ID else udata['points']}",
+                color=0x2B2D31
+            )
+            await user.send(embed=welcome)
+            _, first_q = QUESTIONS[0]
+            await user.send(embed=discord.Embed(description=first_q, color=0x2B2D31))
+            await interaction.response.send_message(embed=discord.Embed(description="Questionnaire envoyé en DM.", color=0x57F287), ephemeral=True)
+        except discord.Forbidden:
+            clear_session(user.id)
+            e = discord.Embed(description="Impossible d'envoyer un DM. Active les messages privés.", color=0xED4245)
+            await interaction.response.send_message(embed=e, ephemeral=True)
+
+
 # ─── EVENTS ──────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} connecté.")
+    bot.add_view(PersistentEmbedView())
     for guild in bot.guilds:
         try:
             invs = await guild.invites()
@@ -315,7 +375,7 @@ JSON VALIDE UNIQUEMENT."""}
         await channel.send(embed=err)
 
 
-# ─── GENERATE (seule commande publique) ──────────────────────────────────────
+# ─── GENERATE ────────────────────────────────────────────────────────────────
 @bot.command(name="generate")
 async def cmd_generate(ctx: commands.Context):
     if not ctx.guild:
@@ -348,11 +408,9 @@ async def cmd_generate(ctx: commands.Context):
             color=0x2B2D31
         )
         await ctx.author.send(embed=welcome)
-
         _, first_q = QUESTIONS[0]
         await ctx.author.send(embed=discord.Embed(description=first_q, color=0x2B2D31))
         await ctx.send(embed=discord.Embed(description="Questionnaire envoyé en DM.", color=0x57F287))
-
     except discord.Forbidden:
         clear_session(ctx.author.id)
         await ctx.send(embed=discord.Embed(description="Impossible d'envoyer un DM. Active les messages privés.", color=0xED4245))
@@ -368,24 +426,6 @@ async def cmd_embed(ctx: commands.Context):
         await ctx.message.delete()
     except Exception:
         pass
-
-    class EmbedView(discord.ui.View):
-        def __init__(self):
-            super().__init__(timeout=None)
-            self.add_item(discord.ui.Button(
-                label="Support",
-                style=discord.ButtonStyle.secondary,
-                emoji="🎫",
-                custom_id="btn_support",
-                disabled=True
-            ))
-            self.add_item(discord.ui.Button(
-                label="Générer un serveur",
-                style=discord.ButtonStyle.primary,
-                emoji="⚡",
-                custom_id="btn_generate",
-                disabled=True
-            ))
 
     main = discord.Embed(
         title="Generate",
@@ -404,9 +444,8 @@ async def cmd_embed(ctx: commands.Context):
         color=0x2B2D31
     )
     main.set_thumbnail(url=bot.user.display_avatar.url)
-    main.set_footer(text="Powered by Groq AI  •  Llama 3.3 70B")
 
-    await ctx.send(embed=main, view=EmbedView())
+    await ctx.send(embed=main, view=PersistentEmbedView())
 
 
 # ─── COMMANDES OWNER ─────────────────────────────────────────────────────────
@@ -561,7 +600,7 @@ async def cmd_listusers(ctx):
 @cmd_listusers.error
 async def owner_error(ctx, error):
     if isinstance(error, commands.CheckFailure):
-        return  # Silencieux pour les non-owners
+        return
 
 
 # ─── LANCEMENT ───────────────────────────────────────────────────────────────
