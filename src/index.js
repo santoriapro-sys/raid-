@@ -255,20 +255,28 @@ async function buildServer(guild, data) {
   for (const r  of guild.roles.cache.values())    { if (r.id === guild.id || r.managed) continue; try { await r.delete(); } catch {} await sleep(300); }
 
   // 2. Rôles
-  const useColors = features.includes('colored_roles');
+const useColors = features.includes('colored_roles');
+
   const roleDefs = [
-    { key: 'admin',   name: '『👑』Administration', color: useColors ? '#FF6B6B' : null, hoist: true,  perms: [PermissionFlagsBits.Administrator] },
-    { key: 'mod',     name: '『🛡️』Modérateur',     color: useColors ? '#4ECDC4' : null, hoist: true,  perms: [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.KickMembers] },
-    { key: 'member',  name: '『👤』Membre',          color: null,                         hoist: false, perms: [] },
-    { key: 'newbie',  name: '『🌱』Nouveau',         color: null,                         hoist: false, perms: [] }
+    { key: 'admin',   name: '『👑』Administration', color: useColors ? 0xFF6B6B : 0x000000, hoist: true,  perms: [PermissionFlagsBits.Administrator] },
+    { key: 'mod',     name: '『🛡️』Modérateur',     color: useColors ? 0x4ECDC4 : 0x000000, hoist: true,  perms: [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.KickMembers] },
+    { key: 'member',  name: '『👤』Membre',          color: 0x000000,                         hoist: false, perms: [] },
+    { key: 'newbie',  name: '『🌱』Nouveau',         color: 0x000000,                         hoist: false, perms: [] }
   ];
-  if (features.includes('staff'))    roleDefs.splice(2, 0, { key: 'staff',   name: '『⚔️』Staff',    color: useColors ? '#A8E6CF' : null, hoist: true,  perms: [PermissionFlagsBits.ManageMessages] });
-  if (features.includes('boosters')) roleDefs.push(        { key: 'booster', name: '『💎』Booster',  color: useColors ? '#F8B500' : null, hoist: false, perms: [] });
-  if (features.includes('giveaways'))roleDefs.push(        { key: 'giveaway',name: '『🎁』Giveaway', color: useColors ? '#FF69B4' : null, hoist: false, perms: [] });
+
+  if (features.includes('staff'))     roleDefs.splice(2, 0, { key: 'staff',   name: '『⚔️』Staff',    color: useColors ? 0xA8E6CF : 0x000000, hoist: true,  perms: [PermissionFlagsBits.ManageMessages] });
+  if (features.includes('boosters'))  roleDefs.push(        { key: 'booster', name: '『💎』Booster',  color: useColors ? 0xF8B500 : 0x000000, hoist: false, perms: [] });
+  if (features.includes('giveaways')) roleDefs.push(        { key: 'giveaway',name: '『🎁』Giveaway', color: useColors ? 0xFF69B4 : 0x000000, hoist: false, perms: [] });
 
   const roles = {};
   for (const def of roleDefs) {
-    roles[def.key] = await guild.roles.create({ name: def.name, color: def.color, hoist: def.hoist, permissions: def.perms, reason: 'Generate' });
+    roles[def.key] = await guild.roles.create({
+      name: def.name,
+      color: def.color,
+      hoist: def.hoist,
+      permissions: def.perms,
+      reason: 'Generate'
+    });
     stats.roles++;
     await sleep(400);
   }
