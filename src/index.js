@@ -546,12 +546,36 @@ async function buildServer(guild, data, plan) {
   }
 
   // ─── STAFF ─────────────────────────────────────────────
-  if (features.includes('staff') && isAdv) {
-    const catS = await makeCat('─── ◈ Staff ───', true, roles.staff?.id || roles.admin?.id);
-    await makeTxt(`『👑』staff-général`, catS, { viewRoleId: roles.admin?.id || everyoneId, topic: 'Discussions internes au staff.' });
-    await makeTxt(`『📝』réunions`,      catS, { viewRoleId: roles.admin?.id || everyoneId, topic: 'Comptes-rendus de réunions.' });
+  if (features.includes('staff')) {
+    // Catégorie cachée à tout le monde sauf staff/admin
+    const catS = await guild.channels.create({
+      name: '─── ◈ Staff ───',
+      type: ChannelType.GuildCategory,
+      permissionOverwrites: [
+        { id: everyoneId, deny: [PermissionFlagsBits.ViewChannel] },
+        ...(roles.staff  ? [{ id: roles.staff.id,  allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }] : []),
+        ...(roles.admin  ? [{ id: roles.admin.id,  allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }] : []),
+        ...(roles.mod    ? [{ id: roles.mod.id,    allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }] : [])
+      ],
+      reason: 'Generate'
+    });
+    stats.categories++;
+    await sleep(250);
+
+    // Salons staff — héritent des perms de la catégorie
+    await guild.channels.create({ name: `『👑』staff-général`, type: ChannelType.GuildText, parent: catS.id, topic: 'Discussions internes au staff.', reason: 'Generate' });
+    stats.channels++; await sleep(350);
+    await guild.channels.create({ name: `『📝』réunions`, type: ChannelType.GuildText, parent: catS.id, topic: 'Comptes-rendus de réunions.', reason: 'Generate' });
+    stats.channels++; await sleep(350);
+    await guild.channels.create({ name: `『📋』sanctions`, type: ChannelType.GuildText, parent: catS.id, topic: 'Suivi des sanctions membres.', reason: 'Generate' });
+    stats.channels++; await sleep(350);
+    if (isAdv) {
+      await guild.channels.create({ name: `『🔔』alertes`, type: ChannelType.GuildText, parent: catS.id, topic: 'Alertes internes.', reason: 'Generate' });
+      stats.channels++; await sleep(350);
+    }
     if (isUltra) {
-      await makeTxt(`『🔔』alertes`,     catS, { readOnly: true, viewRoleId: roles.staff?.id || roles.admin?.id || everyoneId });
+      await guild.channels.create({ name: `『⚙️』config-bot`, type: ChannelType.GuildText, parent: catS.id, topic: 'Configuration des bots du serveur.', reason: 'Generate' });
+      stats.channels++; await sleep(350);
     }
   }
 
@@ -831,19 +855,16 @@ client.on('messageCreate', async (message) => {
       return message.reply({ embeds: [embedWarn('Session active', '> Tu as déjà un questionnaire en cours dans tes DMs.')] });
 
     // Récupérer les guilds où le bot est présent et où l'utilisateur est admin
-    const userGuilds = client.guilds.cache.filter(g =>
-      g.members.cache.get(message.author.id)?.permissions.has(PermissionFlagsBits.Administrator) ||
-      message.author.id === CONFIG.ownerId
-    );
+    const allGuilds = [...client.guilds.cache.values()];
 
-    if (userGuilds.size === 0) {
-      return message.reply({ embeds: [embedErr('Aucun serveur', '> Le bot n\'est sur aucun serveur où tu es admin.\n> Ajoute-le d\'abord via le bouton dans `+help`.')] });
+    if (allGuilds.length === 0) {
+      return message.reply({ embeds: [embedErr('Aucun serveur', '> Le bot n\'est sur aucun serveur. Ajoute-le d\'abord via le bouton dans `+help`.')] });
     }
 
     // Créer une session en attente de selection de guild
     sessions.set(message.author.id, { step: 0, data: {}, guildId: null, awaitingGuild: true });
 
-    const guildsArray = [...userGuilds.values()];
+    const guildsArray = allGuilds;
 
     try {
       await message.author.send({
@@ -909,16 +930,14 @@ client.on('interactionCreate', async (interaction) => {
     if (sessions.has(interaction.user.id))
       return interaction.reply({ embeds: [embedWarn('Session active', '> Tu as déjà un questionnaire en cours dans tes DMs.')], ephemeral: true });
 
-    const userGuilds = client.guilds.cache.filter(g =>
-      g.members.cache.get(interaction.user.id)?.permissions.has(PermissionFlagsBits.Administrator) ||
-      interaction.user.id === CONFIG.ownerId
-    );
+    // Tous les serveurs où le bot est présent
+    const allGuilds = [...client.guilds.cache.values()];
 
-    if (userGuilds.size === 0)
-      return interaction.reply({ embeds: [embedErr('Aucun serveur', '> Ajoute d\'abord le bot sur un serveur via le lien d\'invitation.')], ephemeral: true });
+    if (allGuilds.length === 0)
+      return interaction.reply({ embeds: [embedErr('Aucun serveur', '> Le bot n\'est sur aucun serveur. Ajoute-le via le bouton ci-dessus.')], ephemeral: true });
 
     sessions.set(interaction.user.id, { step: 0, data: {}, guildId: null, awaitingGuild: true });
-    const guildsArray = [...userGuilds.values()];
+    const guildsArray = allGuilds;
 
     try {
       await interaction.user.send({
@@ -1187,6 +1206,75 @@ client.on('interactionCreate', async (interaction) => {
     DB.setTicket(interaction.channel.id, ticketData);
 
     return interaction.reply({ embeds: [embedOk('Pris en charge', `> ✅ ${interaction.user} prend en charge ce ticket.`)] });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  BOOST — 2 jetons quand un membre boost
+// ═══════════════════════════════════════════════════════════
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  // Détecte si le membre vient de booster (pas de boost avant, boost maintenant)
+  const wasBooster = !!oldMember.premiumSince;
+  const isBooster  = !!newMember.premiumSince;
+
+  if (!wasBooster && isBooster) {
+    DB.addPoints(newMember.id, 2);
+
+    // Chercher un salon logs ou général pour notifier
+    const logsConfig = DB.getLogsConfig(newMember.guild.id);
+    const notifChId  = logsConfig?.joinChannelId || logsConfig?.modChannelId;
+
+    if (notifChId) {
+      try {
+        const ch = await newMember.guild.channels.fetch(notifChId).catch(() => null);
+        if (ch) {
+          const embed = new EmbedBuilder()
+            .setColor(0xF8B500)
+            .setTitle('💎  Nouveau Booster !')
+            .setDescription(
+              `> ${newMember} vient de **booster** le serveur !\n` +
+              `> 🪙 **+2 jetons** ont été ajoutés à son compte.\n` +
+              '> **Total :** `' + DB.getPoints(newMember.id) + '` jetons'
+            )
+            .setThumbnail(newMember.user.displayAvatarURL({ size: 128 }))
+            .setFooter({ text: 'Generate  •  Merci pour ton boost !' })
+            .setTimestamp();
+          await ch.send({ embeds: [embed] });
+        }
+      } catch(e) { console.error('Boost notif error:', e.message); }
+    }
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  BOOST — 2 jetons quand un membre boost
+// ═══════════════════════════════════════════════════════════
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  const wasBooster = !!oldMember.premiumSince;
+  const isBooster  = !!newMember.premiumSince;
+  if (!wasBooster && isBooster) {
+    DB.addPoints(newMember.id, 2);
+    const logsConfig = DB.getLogsConfig(newMember.guild.id);
+    const notifChId  = logsConfig?.joinChannelId || logsConfig?.modChannelId;
+    if (notifChId) {
+      try {
+        const ch = await newMember.guild.channels.fetch(notifChId).catch(() => null);
+        if (ch) {
+          const embed = new EmbedBuilder()
+            .setColor(0xF8B500)
+            .setTitle('💎  Nouveau Booster !')
+            .setDescription(
+              `> ${newMember} vient de **booster** le serveur !\n` +
+              `> 🪙 **+2 jetons** ont été ajoutés à son compte.\n` +
+              `> **Total :** \`${DB.getPoints(newMember.id)}\` jetons`
+            )
+            .setThumbnail(newMember.user.displayAvatarURL({ size: 128 }))
+            .setFooter({ text: 'Generate  •  Merci pour ton boost !' })
+            .setTimestamp();
+          await ch.send({ embeds: [embed] });
+        }
+      } catch(e) { console.error('Boost notif error:', e.message); }
+    }
   }
 });
 
