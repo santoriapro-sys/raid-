@@ -6,7 +6,7 @@ import asyncio
 from groq import Groq
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-OWNER_ID = 1191963306785787946
+OWNER_ID = 1191963306785787946 # Remplace par ton ID Discord
 REQUIRED_GUILD_INVITE = "https://discord.gg/45zytfB8gv"
 PREFIX = "+"
 DATA_FILE = "data.json"
@@ -112,7 +112,7 @@ Adapte parfaitement au thème. Utilise des emojis dans les noms si demandé.
 RÉPONDS UNIQUEMENT EN JSON VALIDE."""
 
     response = groq_client.chat.completions.create(
-        model="llama3-70b-8192",
+        model="llama-3.3-70b-versatile",
         messages=[
             {"role": "system", "content": "Tu réponds uniquement en JSON valide, sans texte autour."},
             {"role": "user", "content": prompt}
@@ -122,7 +122,6 @@ RÉPONDS UNIQUEMENT EN JSON VALIDE."""
     )
 
     raw = response.choices[0].message.content
-    # Nettoyer le JSON
     start = raw.find("{")
     end = raw.rfind("}") + 1
     return json.loads(raw[start:end])
@@ -131,7 +130,6 @@ RÉPONDS UNIQUEMENT EN JSON VALIDE."""
 async def build_discord_server(guild: discord.Guild, config: dict) -> dict:
     results = {"roles": [], "categories": [], "channels": [], "errors": []}
 
-    # Supprimer les salons existants
     for channel in list(guild.channels):
         try:
             if channel.permissions_for(guild.me).manage_channels:
@@ -140,7 +138,6 @@ async def build_discord_server(guild: discord.Guild, config: dict) -> dict:
         except Exception as e:
             results["errors"].append(f"Del channel {channel.name}: {e}")
 
-    # Supprimer les rôles existants (sauf @everyone et bot)
     for role in list(guild.roles):
         if role.name != "@everyone" and not role.managed and role != guild.me.top_role:
             try:
@@ -149,7 +146,6 @@ async def build_discord_server(guild: discord.Guild, config: dict) -> dict:
             except Exception as e:
                 results["errors"].append(f"Del role {role.name}: {e}")
 
-    # Créer les rôles
     for role_data in config.get("roles", []):
         try:
             color_hex = role_data.get("color", "#99AAB5").lstrip("#")
@@ -165,7 +161,6 @@ async def build_discord_server(guild: discord.Guild, config: dict) -> dict:
         except Exception as e:
             results["errors"].append(f"Role {role_data.get('name')}: {e}")
 
-    # Créer les catégories et salons
     for cat_data in config.get("categories", []):
         try:
             category = await guild.create_category(cat_data["name"])
@@ -189,7 +184,6 @@ async def build_discord_server(guild: discord.Guild, config: dict) -> dict:
         except Exception as e:
             results["errors"].append(f"Category {cat_data.get('name')}: {e}")
 
-    # Renommer le serveur
     if config.get("serverName"):
         try:
             await guild.edit(name=config["serverName"])
@@ -252,7 +246,6 @@ async def on_member_join(member: discord.Member):
         )
         invite_cache[guild.id] = {inv.code: inv.uses for inv in new_invites}
 
-        # Vérifie que c'est bien le serveur requis
         if used and used.code == "45zytfB8gv" and used.inviter:
             inviter_id = used.inviter.id
             user = get_user(inviter_id)
@@ -268,7 +261,6 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # Réponses en DM pour le questionnaire
     if isinstance(message.channel, discord.DMChannel) and not message.content.startswith(PREFIX):
         session = get_session(message.author.id)
         if not session:
@@ -301,7 +293,7 @@ async def _process_generation(channel: discord.DMChannel, author: discord.User, 
 
     processing_embed = discord.Embed(
         title="⚙️ Génération en cours...",
-        description="L'IA **Groq (Llama 3 70B)** analyse tes réponses et génère la configuration parfaite...\n\n*Quelques secondes ⏳*",
+        description="L'IA **Groq (Llama 3.3 70B)** analyse tes réponses et génère la configuration parfaite...\n\n*Quelques secondes ⏳*",
         color=0xFEE75C
     )
     answers_text = "\n".join(f"• **{k}** : {v[:50]}" for k, v in session["answers"].items())
@@ -309,13 +301,9 @@ async def _process_generation(channel: discord.DMChannel, author: discord.User, 
     msg = await channel.send(embed=processing_embed)
 
     try:
-        config = await asyncio.to_thread(
-            lambda: asyncio.run(generate_server_config(session["answers"]))
-            if False else None
-        )
         config = await asyncio.get_event_loop().run_in_executor(
             None, lambda: groq_client.chat.completions.create(
-                model="llama3-70b-8192",
+                model="llama-3.3-70b-versatile",
                 messages=[
                     {"role": "system", "content": "Tu réponds uniquement en JSON valide, sans texte autour."},
                     {"role": "user", "content": f"""Tu es un expert Discord. Génère un JSON de configuration pour ce serveur :
@@ -333,7 +321,6 @@ RÉPONDS UNIQUEMENT EN JSON VALIDE."""}
         start = raw.find("{"); end = raw.rfind("}") + 1
         config_data = json.loads(raw[start:end])
 
-        # Preview
         preview_embed = discord.Embed(
             title="✅ Configuration générée !",
             description=f"**{config_data.get('serverName', '?')}** — {config_data.get('serverDescription', '')}",
@@ -346,7 +333,6 @@ RÉPONDS UNIQUEMENT EN JSON VALIDE."""}
         await msg.edit(embed=preview_embed)
         await asyncio.sleep(3)
 
-        # Build
         build_embed = discord.Embed(
             title="🔨 Construction en cours...",
             description="Application sur ton serveur Discord...\n⚠️ Ne modifie rien pendant ce processus !",
@@ -360,7 +346,6 @@ RÉPONDS UNIQUEMENT EN JSON VALIDE."""}
 
         results = await build_discord_server(guild, config_data)
 
-        # Déduire les points
         if author.id != OWNER_ID:
             user = get_user(author.id)
             update_user(author.id,
@@ -372,15 +357,9 @@ RÉPONDS UNIQUEMENT EN JSON VALIDE."""}
             description=f"{config_data.get('welcomeMessage', '**Bienvenue !**')}",
             color=0x57F287
         )
-        success_embed.add_field(
-            name="✅ Rôles", value=", ".join(results["roles"]) or "Aucun", inline=False
-        )
-        success_embed.add_field(
-            name="📁 Catégories", value=", ".join(results["categories"][:5]) or "Aucune", inline=False
-        )
-        success_embed.add_field(
-            name="💬 Salons créés", value=str(len(results["channels"])), inline=True
-        )
+        success_embed.add_field(name="✅ Rôles", value=", ".join(results["roles"]) or "Aucun", inline=False)
+        success_embed.add_field(name="📁 Catégories", value=", ".join(results["categories"][:5]) or "Aucune", inline=False)
+        success_embed.add_field(name="💬 Salons créés", value=str(len(results["channels"])), inline=True)
         rules = config_data.get("rules", [])
         if rules:
             success_embed.add_field(
@@ -389,11 +368,7 @@ RÉPONDS UNIQUEMENT EN JSON VALIDE."""}
                 inline=False
             )
         if results["errors"]:
-            success_embed.add_field(
-                name="⚠️ Avertissements",
-                value="\n".join(results["errors"][:3]),
-                inline=False
-            )
+            success_embed.add_field(name="⚠️ Avertissements", value="\n".join(results["errors"][:3]), inline=False)
         user_data = get_user(author.id)
         footer = "Owner — Points illimités" if author.id == OWNER_ID else f"Points restants : {user_data['points']}"
         success_embed.set_footer(text=footer)
@@ -424,6 +399,7 @@ async def cmd_help(ctx: commands.Context):
         "`+help` — Afficher cette aide"
     ), inline=False)
     embed.add_field(name="👑 Commandes Owner", value=(
+        "`+embed` — Poster l'embed de présentation du bot\n"
         "`+addpoints @user <n>` — Ajouter des points\n"
         "`+removepoints @user <n>` — Retirer des points\n"
         "`+setpoints @user <n>` — Définir les points\n"
@@ -443,7 +419,7 @@ async def cmd_help(ctx: commands.Context):
         "4. Réponds aux questions en DM\n"
         "5. Le serveur est créé automatiquement 🚀"
     ), inline=False)
-    embed.set_footer(text="Propulsé par Groq AI • Llama 3 70B")
+    embed.set_footer(text="Propulsé par Groq AI • Llama 3.3 70B")
     await ctx.send(embed=embed)
 
 
@@ -559,6 +535,85 @@ async def cmd_generate(ctx: commands.Context):
             color=0xED4245
         )
         await ctx.send(embed=embed)
+
+
+# ─── COMMANDE EMBED (Owner only) ─────────────────────────────────────────────
+@bot.command(name="embed")
+async def cmd_embed(ctx: commands.Context):
+    if ctx.author.id != OWNER_ID:
+        return await ctx.send("❌ Commande réservée au Owner.")
+
+    # Supprimer le message de commande
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    # Embed principal de présentation
+    main_embed = discord.Embed(
+        title="🤖 Discord Server Generator — Powered by Groq AI",
+        description=(
+            "Crée un serveur Discord **complet et personnalisé** en quelques minutes grâce à l'intelligence artificielle !\n\n"
+            "Notre bot analyse tes besoins et génère automatiquement :\n"
+            "✅ Des **catégories** et **salons** adaptés\n"
+            "✅ Des **rôles** avec couleurs personnalisées\n"
+            "✅ Un **message de bienvenue** unique\n"
+            "✅ Des **règles** adaptées à ton serveur\n\n"
+            "🧠 Propulsé par **Llama 3.3 70B** via Groq AI"
+        ),
+        color=0x5865F2
+    )
+    main_embed.set_thumbnail(url=bot.user.display_avatar.url)
+    main_embed.add_field(
+        name="🎫 Comment obtenir des points ?",
+        value=(
+            f"1️⃣ Rejoins le serveur officiel → {REQUIRED_GUILD_INVITE}\n"
+            "2️⃣ Invite des membres avec ton lien\n"
+            "3️⃣ **1 invitation = 1 point = 1 génération**"
+        ),
+        inline=False
+    )
+    main_embed.add_field(
+        name="🚀 Comment générer ton serveur ?",
+        value=(
+            "1️⃣ Ajoute le bot sur ton serveur\n"
+            "2️⃣ Tape `+generate` en tant qu'administrateur\n"
+            "3️⃣ Réponds aux **7 questions** en DM\n"
+            "4️⃣ Le bot construit tout automatiquement ! 🎉"
+        ),
+        inline=False
+    )
+    main_embed.add_field(
+        name="📋 Commandes disponibles",
+        value=(
+            "`+generate` — Lancer la création de serveur\n"
+            "`+profile` — Voir tes points\n"
+            "`+invites` — Voir tes invitations\n"
+            "`+help` — Aide complète"
+        ),
+        inline=False
+    )
+    main_embed.set_footer(text="Discord Server Generator • Groq AI • Llama 3.3 70B")
+
+    await ctx.send(embed=main_embed)
+
+    # Embed secondaire avec les questions posées
+    questions_embed = discord.Embed(
+        title="❓ Les questions posées lors de la génération",
+        description="Voici un aperçu des **7 questions** que le bot te posera en DM :",
+        color=0x57F287
+    )
+    for i, (_, question_text) in enumerate(QUESTIONS):
+        # Extraire juste la première ligne (titre de la question)
+        first_line = question_text.split("\n")[0]
+        questions_embed.add_field(
+            name=f"Question {i+1}",
+            value=first_line,
+            inline=False
+        )
+    questions_embed.set_footer(text=f"Rejoins le serveur officiel pour commencer → {REQUIRED_GUILD_INVITE}")
+
+    await ctx.send(embed=questions_embed)
 
 
 # ─── COMMANDES OWNER ─────────────────────────────────────────────────────────
