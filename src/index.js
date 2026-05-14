@@ -1,50 +1,74 @@
-'use strict';
-require('dotenv').config();
+const Enmap = require('enmap');
 
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
-const config = require('./config/config');
-const logger = require('./utils/logger');
+const db = new Enmap({ name: 'generate', dataDir: './data' });
 
-// ── Création du client ────────────────────────────────────
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildInvites,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.GuildMessageReactions
-  ],
-  partials: [Partials.Channel, Partials.Message, Partials.User]
-});
+module.exports = {
+  async getPoints(userId) {
+    return db.ensure(`points_${userId}`, 0);
+  },
+  async setPoints(userId, amount) {
+    db.set(`points_${userId}`, amount);
+  },
+  async addPoints(userId, amount) {
+    const current = db.ensure(`points_${userId}`, 0);
+    db.set(`points_${userId}`, current + amount);
+  },
+  async removePoints(userId, amount) {
+    const current = db.ensure(`points_${userId}`, 0);
+    db.set(`points_${userId}`, Math.max(0, current - amount));
+  },
 
-// ── Chargement handlers ───────────────────────────────────
-require('./handlers/commandHandler')(client);
-require('./handlers/eventHandler')(client);
+  async getGenerations(userId) {
+    return db.ensure(`generations_${userId}`, 0);
+  },
+  async incrementGenerations(userId) {
+    const current = db.ensure(`generations_${userId}`, 0);
+    db.set(`generations_${userId}`, current + 1);
+  },
 
-// ── Anti-crash système ────────────────────────────────────
-process.on('unhandledRejection', (reason) => {
-  logger.error(`Unhandled Rejection : ${reason?.stack || reason}`);
-});
+  async getInvites(userId) {
+    return db.ensure(`invites_${userId}`, 0);
+  },
+  async setInvites(userId, amount) {
+    db.set(`invites_${userId}`, amount);
+  },
+  async addInvites(userId, amount) {
+    const current = db.ensure(`invites_${userId}`, 0);
+    db.set(`invites_${userId}`, current + amount);
+  },
 
-process.on('uncaughtException', (err) => {
-  logger.error(`Uncaught Exception : ${err.stack}`);
-  // On ne quitte PAS pour Railway (auto-restart si crash fatal)
-});
+  async getCooldown(userId, command) {
+    return db.get(`cooldown_${command}_${userId}`) || null;
+  },
+  async setCooldown(userId, command, timestamp) {
+    db.set(`cooldown_${command}_${userId}`, timestamp);
+  },
 
-process.on('uncaughtExceptionMonitor', (err) => {
-  logger.error(`Exception Monitor : ${err.stack}`);
-});
+  async resetUser(userId) {
+    db.delete(`points_${userId}`);
+    db.delete(`invites_${userId}`);
+    db.delete(`generations_${userId}`);
+  },
 
-// ── Vérification token ────────────────────────────────────
-if (!config.token) {
-  logger.error('TOKEN manquant dans les variables d\'environnement');
-  process.exit(1);
-}
+  async addHistory(userId, data) {
+    const history = db.ensure(`history_${userId}`, []);
+    history.push({ ...data, date: new Date().toISOString() });
+    if (history.length > 20) history.shift();
+    db.set(`history_${userId}`, history);
+  },
 
-// ── Connexion Discord ─────────────────────────────────────
-client.login(config.token).catch((err) => {
-  logger.error(`Connexion échouée : ${err.message}`);
-  process.exit(1);
-});
+  async hasReceivedBoosterBonus(userId) {
+    return db.ensure(`boosterBonus_${userId}`, false);
+  },
+  async setBoosterBonus(userId) {
+    db.set(`boosterBonus_${userId}`, true);
+  },
+
+  async getTotalGenerations() {
+    return db.ensure('stats_totalGenerations', 0);
+  },
+  async incrementTotalGenerations() {
+    const current = db.ensure('stats_totalGenerations', 0);
+    db.set('stats_totalGenerations', current + 1);
+  }
+};
