@@ -20,7 +20,7 @@ const CONFIG = {
   supportInvite:  process.env.SUPPORT_INVITE || 'https://discord.gg/2PvXETvFFG',
   prefix:         process.env.PREFIX || '+',
   color:          0x2B2D31,
-  anthropicKey:   process.env.ANTHROPIC_API_KEY || ''
+  geminiKey:      process.env.GEMINI_API_KEY || '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'
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -84,57 +84,93 @@ const STEPS = [
 //  CLAUDE API — génération unique du plan serveur
 // ═══════════════════════════════════════════════════════════
 async function generateServerPlan(data) {
-  if (!CONFIG.anthropicKey) return null;
+  if (!CONFIG.geminiKey) return null;
 
   const features = Array.isArray(data.features) ? data.features.join(', ') : data.features;
-  const prompt = `Tu es un expert en création de serveurs Discord. Génère un plan de serveur Discord UNIQUE et CRÉATIF basé sur ces informations :
+  // Seed aléatoire pour forcer l'unicité même avec les mêmes infos
+  const seed = Math.random().toString(36).slice(2, 8).toUpperCase();
+  const ts   = Date.now();
 
-- Nom : ${data.serverName}
-- Thème : ${data.theme}
-- Membres prévus : ${data.members}
-- Langue : ${data.language}
-- Rôles souhaités : ${data.rolesCount}
-- Style : ${data.style}
-- Fonctionnalités : ${features}
-- Finition : ${data.finish}
-- Couleurs/Ambiance : ${data.colors}
-- Fondateur : ${data.founder}
+  const prompt = `Tu es un designer expert en serveurs Discord. Génère un plan TOTALEMENT UNIQUE pour ce serveur (seed: ${seed}, ts: ${ts}).
 
-Réponds UNIQUEMENT en JSON valide avec cette structure :
+DONNÉES :
+- Nom: ${data.serverName}
+- Thème: ${data.theme}
+- Membres: ${data.members}
+- Langue: ${data.language}
+- Rôles voulus: ${data.rolesCount}
+- Style: ${data.style}
+- Features: ${features}
+- Finition: ${data.finish}
+- Couleurs/Ambiance: ${data.colors}
+- Fondateur: ${data.founder}
+
+RÈGLES ABSOLUES :
+1. JAMAIS utiliser des noms génériques comme "général", "off-topic", "annonces", "règlement" — TOUJOURS des noms thématiques (ex thème gaming: "arene-principale", "zone-detente", "bulletins-de-guerre")
+2. JAMAIS utiliser des noms de catégories génériques — crée des noms immersifs et uniques liés au thème
+3. Les topics doivent être accrocheurs, fun, avec la personnalité du serveur
+4. Le règlement doit avoir la VOIX du serveur, pas un règlement copié-collé standard
+5. Les rôles custom doivent être ORIGINAUX et coller parfaitement au thème
+6. Le seed ${seed} garantit que cette génération est UNIQUE — utilise-le pour varier ton inspiration
+7. Aucun nom de salon ou catégorie ne doit ressembler à une autre génération
+
+Réponds UNIQUEMENT en JSON valide, sans markdown, sans backticks :
 {
-  "welcomeMessage": "message de bienvenue personnalisé et accrocheur (2-3 phrases)",
-  "rulesText": "règlement adapté au thème (5 règles numérotées)",
-  "categoryNames": ["nom catégorie 1", "nom catégorie 2", ...],
-  "channelTopics": {
-    "general": "topic du salon général adapté au thème",
-    "off-topic": "topic off-topic fun",
-    "announcements": "topic annonces"
+  "categories": {
+    "info":     "nom catégorie information thématique (ex: '✦ Quartier Général ✦')",
+    "general":  "nom catégorie générale thématique",
+    "welcome":  "nom catégorie bienvenue thématique",
+    "voice":    "nom catégorie vocale thématique",
+    "support":  "nom catégorie support thématique",
+    "logs":     "nom catégorie logs thématique",
+    "staff":    "nom catégorie staff thématique",
+    "boosters": "nom catégorie boosters thématique",
+    "giveaway": "nom catégorie giveaway thématique"
   },
-  "customRoles": ["Rôle 1 thématique", "Rôle 2 thématique"],
-  "serverDescription": "description courte du serveur (1 phrase)",
+  "channels": {
+    "announcements": "nom-salon-annonces-thematique",
+    "rules":         "nom-salon-reglement-thematique",
+    "presentation":  "nom-salon-presentation-thematique",
+    "general":       "nom-salon-general-thematique",
+    "offtopic":      "nom-salon-offtopic-thematique",
+    "memes":         "nom-salon-memes-thematique",
+    "media":         "nom-salon-media-thematique",
+    "welcome":       "nom-salon-bienvenue-thematique",
+    "roles":         "nom-salon-roles-thematique"
+  },
+  "topics": {
+    "announcements": "topic accrocheur pour le salon annonces",
+    "rules":         "topic pour le règlement",
+    "general":       "topic fun et thématique pour le salon principal",
+    "offtopic":      "topic décalé pour off-topic",
+    "memes":         "topic drôle pour les memes",
+    "welcome":       "topic de bienvenue chaleureux"
+  },
+  "customRoles": ["Rôle 1 ultra thématique", "Rôle 2 ultra thématique", "Rôle 3 thématique"],
+  "rulesText": "Règlement complet 6 règles numérotées, totalement adapté au thème et à la personnalité du serveur, avec émojis",
   "welcomeEmbed": {
-    "title": "titre embed de bienvenue",
-    "description": "description embed de bienvenue avec infos utiles"
-  }
+    "title": "Titre embed bienvenue original et thématique",
+    "description": "Description embed bienvenue 3-4 lignes, chaleureuse, thématique, avec les infos clés"
+  },
+  "launchMessage": "Message de lancement du serveur accrocheur 2 phrases",
+  "serverDescription": "Description serveur une phrase percutante"
 }`;
 
   try {
-    const res = await axios.post('https://api.anthropic.com/v1/messages', {
-      model: 'claude-opus-4-20250514',
-      max_tokens: 1200,
-      messages: [{ role: 'user', content: prompt }]
-    }, {
-      headers: {
-        'x-api-key': CONFIG.anthropicKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
+    const res = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${CONFIG.geminiKey}`,
+      {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 1.5, maxOutputTokens: 2000 }
       },
-      timeout: 30000
-    });
+      { headers: { 'content-type': 'application/json' }, timeout: 45000 }
+    );
 
-    const text = res.data.content[0].text;
-    const json = text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
-    return JSON.parse(json);
+    const text = res.data.candidates[0].content.parts[0].text;
+    // Extraire le JSON même si l'IA met des backticks
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('No JSON in response');
+    return JSON.parse(jsonMatch[0]);
   } catch(e) {
     console.error('Claude API error:', e.message);
     return null;
@@ -351,10 +387,10 @@ async function buildServer(guild, data, plan) {
     { key: 'newbie',  name: '『🌱』Nouveau',         color: 0x000000,                         hoist: false, perms: [] }
   ];
 
-  // Rôles custom générés par l'IA
+  // Rôles custom générés par l'IA — insérés avant Membre
   if (plan?.customRoles?.length) {
-    for (const rName of plan.customRoles.slice(0, 3)) {
-      roleDefs.splice(2, 0, { key: `custom_${rName}`, name: rName, color: 0x000000, hoist: false, perms: [] });
+    for (const rName of plan.customRoles.slice(0, 4)) {
+      roleDefs.splice(2, 0, { key: `custom_${rName}`, name: `『✨』${rName}`, color: useColors ? 0x9B59B6 : 0x000000, hoist: false, perms: [] });
     }
   }
 
@@ -422,32 +458,46 @@ async function buildServer(guild, data, plan) {
     await sleep(350);
   }
 
+  // ─── Helpers noms IA (fallback si pas d'API) ────────────
+  const p = plan || {};
+  const cat  = p.categories || {};
+  const ch   = p.channels   || {};
+  const top  = p.topics     || {};
+
+  function catName(key, fallback) { return cat[key] || fallback; }
+  function chName(key, fallback)  {
+    const raw = ch[key] || fallback;
+    // Sanitize : minuscules, tirets, max 100 chars, pas d'espaces
+    return raw.toLowerCase().replace(/[^a-z0-9\-\_à-ü]/g,'').slice(0,90) || fallback;
+  }
+  function topic(key, fallback)   { return top[key] || fallback; }
+
   // 3. CATÉGORIES & SALONS
 
   // ─── INFO ──────────────────────────────────────────────
   if (features.includes('announcements') || features.includes('rules') || features.includes('presentation')) {
-    const cat = await makeCat('─── ◈ Information ───');
+    const catI = await makeCat(catName('info', '─── ◈ Information ───'));
     if (features.includes('announcements')) {
-      const ch = await makeTxt(`『📢』annonces`, cat, {
+      const anCh = await makeTxt(`『📢』${chName('announcements','annonces')}`, catI, {
         canSend: false, readOnly: true,
-        topic: plan?.channelTopics?.announcements || 'Retrouvez toutes les annonces officielles ici.'
+        topic: topic('announcements', 'Retrouvez toutes les annonces officielles ici.')
       });
-      channelRefs.announcements = ch;
+      channelRefs.announcements = anCh;
     }
     if (features.includes('rules')) {
-      const ch = await makeTxt(`『📜』règlement`, cat, {
+      const rCh = await makeTxt(`『📜』${chName('rules','reglement')}`, catI, {
         canSend: false, readOnly: true,
-        topic: 'Lisez et respectez le règlement du serveur.'
+        topic: topic('rules', 'Lisez et respectez le règlement du serveur.')
       });
-      channelRefs.rules = ch;
+      channelRefs.rules = rCh;
     }
     if (features.includes('presentation')) {
-      await makeTxt(`『👤』présentations`, cat, {
-        topic: 'Présente-toi à la communauté !', slowmode: 300
+      await makeTxt(`『👤』${chName('presentation','presentations')}`, catI, {
+        topic: topic('presentation', 'Présente-toi à la communauté !'), slowmode: 300
       });
     }
     if (isAdv) {
-      await makeTxt(`『📅』événements`, cat, {
+      await makeTxt(`『📅』evenements`, catI, {
         canSend: false, readOnly: true,
         topic: 'Tous les événements à venir.'
       });
@@ -455,55 +505,63 @@ async function buildServer(guild, data, plan) {
   }
 
   // ─── GÉNÉRAL ───────────────────────────────────────────
-  const catGen = await makeCat('─── ◈ Général ───');
-  const genCh = await makeTxt(`『${em.g}』général`, catGen, {
-    topic: plan?.channelTopics?.general || `Bienvenue sur ${data.serverName} ! Parlez de tout ici.`,
+  const catGen = await makeCat(catName('general', '─── ◈ Général ───'));
+  const genCh = await makeTxt(`『${em.g}』${chName('general','general')}`, catGen, {
+    topic: topic('general', `Bienvenue sur ${data.serverName} ! Parlez de tout ici.`),
     slowmode: 3
   });
   channelRefs.general = genCh;
 
-  await makeTxt(`『💬』off-topic`, catGen, {
-    topic: plan?.channelTopics?.['off-topic'] || 'Discussions hors-sujet, détente !',
+  await makeTxt(`『💬』${chName('offtopic','off-topic')}`, catGen, {
+    topic: topic('offtopic', 'Discussions hors-sujet, détente !'),
     slowmode: 5
   });
 
   if (isAdv) {
-    await makeTxt(`『😂』memes`, catGen, { topic: 'Partagez vos meilleurs memes !', slowmode: 10 });
-    await makeTxt(`『📸』médias`, catGen, { topic: 'Photos, vidéos, créations...', slowmode: 15 });
+    await makeTxt(`『😂』${chName('memes','memes')}`, catGen, {
+      topic: topic('memes', 'Partagez vos meilleurs memes !'), slowmode: 10
+    });
+    await makeTxt(`『📸』${chName('media','medias')}`, catGen, {
+      topic: topic('media', 'Photos, vidéos, créations...'), slowmode: 15
+    });
   }
   if (isUltra) {
-    await makeTxt(`『🎨』créations`, catGen, { topic: 'Partagez vos créations artistiques.', slowmode: 30 });
+    await makeTxt(`『🎨』creations`, catGen, { topic: 'Partagez vos créations artistiques.', slowmode: 30 });
   }
 
   // ─── BIENVENUE ─────────────────────────────────────────
   if (isAdv) {
-    const catW = await makeCat('─── ◈ Bienvenue ───');
-    const welcomeCh = await makeTxt(`『👋』bienvenue`, catW, { canSend: false, readOnly: true,
-      topic: `Bienvenue sur ${data.serverName} !` });
+    const catW = await makeCat(catName('welcome', '─── ◈ Bienvenue ───'));
+    const welcomeCh = await makeTxt(`『👋』${chName('welcome','bienvenue')}`, catW, {
+      canSend: false, readOnly: true,
+      topic: topic('welcome', `Bienvenue sur ${data.serverName} !`)
+    });
     channelRefs.welcome = welcomeCh;
-    await makeTxt(`『🎭』choix-rôles`, catW, { topic: 'Sélectionnez vos rôles ici.', readOnly: false });
+    await makeTxt(`『🎭』${chName('roles','choix-roles')}`, catW, {
+      topic: 'Sélectionnez vos rôles ici.', readOnly: false
+    });
   }
 
   // ─── VOCAL ─────────────────────────────────────────────
   if (features.includes('voice')) {
-    const catV = await makeCat('─── ◈ Vocal ───');
+    const catV = await makeCat(catName('voice', '─── ◈ Vocal ───'));
     const count = Math.min(Math.max(parseInt(data.rolesCount) || 3, 1), 5);
     for (let i = 1; i <= count; i++) {
-      await makeVoice(`『${em.v}』Vocal ${i}`, catV);
+      await makeVoice(`『${em.v}』vocal-${i}`, catV);
     }
     if (isAdv) {
-      await makeVoice(`『🎙️』Lounge`, catV, 10);
-      await makeVoice(`『🎵』Musique`, catV, 20);
+      await makeVoice(`『🎙️』lounge`, catV, 10);
+      await makeVoice(`『🎵』musique`, catV, 20);
     }
     if (isUltra) {
-      await makeVoice(`『📞』Privé 1`, catV, 5);
-      await makeVoice(`『📞』Privé 2`, catV, 5);
+      await makeVoice(`『📞』prive-1`, catV, 5);
+      await makeVoice(`『📞』prive-2`, catV, 5);
     }
   }
 
   // ─── TICKETS ───────────────────────────────────────────
   if (features.includes('tickets')) {
-    const catT = await makeCat('─── ◈ Support ───');
+    const catT = await makeCat(catName('support', '─── ◈ Support ───'));
     const ticketPanel = await makeTxt(`『🎫』ouvrir-un-ticket`, catT, {
       readOnly: true, topic: 'Cliquez sur le bouton ci-dessous pour ouvrir un ticket.'
     });
@@ -517,7 +575,6 @@ async function buildServer(guild, data, plan) {
       channelRefs.ticketLog = ticketLog;
     }
 
-    // Sauvegarder config tickets
     DB.setTicketConfig(guild.id, {
       panelChannelId: ticketPanel.id,
       logChannelId:   channelRefs.ticketLog?.id || null,
@@ -528,11 +585,11 @@ async function buildServer(guild, data, plan) {
 
   // ─── LOGS ──────────────────────────────────────────────
   if (features.includes('logs')) {
-    const catL = await makeCat('─── ◈ Logs ───', true, roles.admin?.id);
+    const catL = await makeCat(catName('logs', '─── ◈ Logs ───'), true, roles.admin?.id);
 
-    const logJoin  = await makeTxt(`『✅』logs-arrivées`,    catL, { readOnly: true, viewRoleId: roles.admin?.id || everyoneId });
-    const logLeave = await makeTxt(`『❌』logs-départs`,     catL, { readOnly: true, viewRoleId: roles.admin?.id || everyoneId });
-    const logMod   = await makeTxt(`『🔨』logs-modération`,  catL, { readOnly: true, viewRoleId: roles.admin?.id || everyoneId });
+    const logJoin  = await makeTxt(`『✅』logs-arrivees`,    catL, { readOnly: true, viewRoleId: roles.admin?.id || everyoneId });
+    const logLeave = await makeTxt(`『❌』logs-departs`,     catL, { readOnly: true, viewRoleId: roles.admin?.id || everyoneId });
+    const logMod   = await makeTxt(`『🔨』logs-moderation`,  catL, { readOnly: true, viewRoleId: roles.admin?.id || everyoneId });
     const logMsg   = isAdv ? await makeTxt(`『💬』logs-messages`, catL, { readOnly: true, viewRoleId: roles.admin?.id || everyoneId }) : null;
     const logSrv   = isUltra ? await makeTxt(`『⚙️』logs-serveur`, catL, { readOnly: true, viewRoleId: roles.admin?.id || everyoneId }) : null;
 
@@ -549,7 +606,7 @@ async function buildServer(guild, data, plan) {
   if (features.includes('staff')) {
     // Catégorie cachée à tout le monde sauf staff/admin
     const catS = await guild.channels.create({
-      name: '─── ◈ Staff ───',
+      name: catName('staff', '─── ◈ Staff ───'),
       type: ChannelType.GuildCategory,
       permissionOverwrites: [
         { id: everyoneId, deny: [PermissionFlagsBits.ViewChannel] },
@@ -581,13 +638,13 @@ async function buildServer(guild, data, plan) {
 
   // ─── BOOSTERS ──────────────────────────────────────────
   if (features.includes('boosters') && isUltra && roles.booster) {
-    const catB = await makeCat('─── ◈ Boosters ───', true, roles.booster.id);
+    const catB = await makeCat(catName('boosters', '─── ◈ Boosters ───'), true, roles.booster.id);
     await makeTxt(`『💎』salon-boosters`, catB, { viewRoleId: roles.booster.id, topic: 'Salon exclusif pour les boosters !' });
   }
 
   // ─── GIVEAWAYS ─────────────────────────────────────────
   if (features.includes('giveaways') && isAdv) {
-    const catG = await makeCat('─── ◈ Giveaways ───');
+    const catG = await makeCat(catName('giveaway', '─── ◈ Giveaways ───'));
     await makeTxt(`『🎁』giveaways`, catG, { readOnly: true, topic: 'Participe aux giveaways !' });
     await makeTxt(`『🏆』gagnants`,  catG, { readOnly: true, topic: 'Félicitations aux gagnants !' });
   }
@@ -855,16 +912,19 @@ client.on('messageCreate', async (message) => {
       return message.reply({ embeds: [embedWarn('Session active', '> Tu as déjà un questionnaire en cours dans tes DMs.')] });
 
     // Récupérer les guilds où le bot est présent et où l'utilisateur est admin
-    const allGuilds = [...client.guilds.cache.values()];
+    const adminGuilds = client.guilds.cache.filter(g => {
+      const member = g.members.cache.get(message.author.id);
+      return member?.permissions.has(PermissionFlagsBits.Administrator) || message.author.id === CONFIG.ownerId;
+    });
 
-    if (allGuilds.length === 0) {
-      return message.reply({ embeds: [embedErr('Aucun serveur', '> Le bot n\'est sur aucun serveur. Ajoute-le d\'abord via le bouton dans `+help`.')] });
+    if (adminGuilds.size === 0) {
+      return message.reply({ embeds: [embedErr('Accès refusé', '> Tu dois être **Administrateur** sur un serveur pour générer.\n> Ajoute le bot sur un serveur où tu es admin.')] });
     }
 
     // Créer une session en attente de selection de guild
     sessions.set(message.author.id, { step: 0, data: {}, guildId: null, awaitingGuild: true });
 
-    const guildsArray = allGuilds;
+    const guildsArray = [...adminGuilds.values()];
 
     try {
       await message.author.send({
@@ -930,14 +990,17 @@ client.on('interactionCreate', async (interaction) => {
     if (sessions.has(interaction.user.id))
       return interaction.reply({ embeds: [embedWarn('Session active', '> Tu as déjà un questionnaire en cours dans tes DMs.')], ephemeral: true });
 
-    // Tous les serveurs où le bot est présent
-    const allGuilds = [...client.guilds.cache.values()];
+    // Serveurs où l'utilisateur a la permission Administrateur
+    const adminGuilds = client.guilds.cache.filter(g => {
+      const member = g.members.cache.get(interaction.user.id);
+      return member?.permissions.has(PermissionFlagsBits.Administrator) || interaction.user.id === CONFIG.ownerId;
+    });
 
-    if (allGuilds.length === 0)
-      return interaction.reply({ embeds: [embedErr('Aucun serveur', '> Le bot n\'est sur aucun serveur. Ajoute-le via le bouton ci-dessus.')], ephemeral: true });
+    if (adminGuilds.size === 0)
+      return interaction.reply({ embeds: [embedErr('Accès refusé', '> Tu dois être **Administrateur** sur un serveur pour générer.\n> Ajoute le bot sur un serveur où tu es admin.')], ephemeral: true });
 
     sessions.set(interaction.user.id, { step: 0, data: {}, guildId: null, awaitingGuild: true });
-    const guildsArray = allGuilds;
+    const guildsArray = [...adminGuilds.values()];
 
     try {
       await interaction.user.send({
@@ -963,6 +1026,14 @@ client.on('interactionCreate', async (interaction) => {
     if (!guild) {
       sessions.delete(interaction.user.id);
       return interaction.update({ embeds: [embedErr('Serveur introuvable', '> Impossible de trouver ce serveur.')], components: [] });
+    }
+
+    // Double vérification admin au moment de la sélection
+    const memberInGuild = guild.members.cache.get(interaction.user.id);
+    if (interaction.user.id !== CONFIG.ownerId && !memberInGuild?.permissions.has(PermissionFlagsBits.Administrator)) {
+      sessions.delete(interaction.user.id);
+      return interaction.update({ embeds: [embedErr('Accès refusé', `> Tu n'es pas **Administrateur** sur **${guild.name}**.
+> Choisis un serveur où tu as la permission admin.`)], components: [] });
     }
 
     await interaction.update({ embeds: [embedBase('◈  Serveur sélectionné', `> ✅ Serveur : **${guild.name}**\n\n> Le questionnaire va démarrer...`)], components: [] });
@@ -1021,7 +1092,7 @@ client.on('interactionCreate', async (interaction) => {
     try {
       // Appel Claude API pour plan unique
       let plan = null;
-      if (CONFIG.anthropicKey) {
+      if (CONFIG.geminiKey) {
         await interaction.editReply({
           embeds: [embedBase('◈  Génération en cours...', '`▓▓▓░░░░░░░` 30% — Personnalisation en cours...\n\n*Patiente quelques secondes.*')]
         });
