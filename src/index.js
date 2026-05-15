@@ -106,13 +106,15 @@ DONNÉES :
 - Fondateur: ${data.founder}
 
 RÈGLES ABSOLUES :
-1. JAMAIS utiliser des noms génériques comme "général", "off-topic", "annonces", "règlement" — TOUJOURS des noms thématiques (ex thème gaming: "arene-principale", "zone-detente", "bulletins-de-guerre")
-2. JAMAIS utiliser des noms de catégories génériques — crée des noms immersifs et uniques liés au thème
-3. Les topics doivent être accrocheurs, fun, avec la personnalité du serveur
-4. Le règlement doit avoir la VOIX du serveur, pas un règlement copié-collé standard
-5. Les rôles custom doivent être ORIGINAUX et coller parfaitement au thème
-6. Le seed ${seed} garantit que cette génération est UNIQUE — utilise-le pour varier ton inspiration
-7. Aucun nom de salon ou catégorie ne doit ressembler à une autre génération
+1. channel names MUST be in kebab-case, lowercase, NO accents, NO special chars — only a-z, 0-9, hyphens (ex: "arena-principale", "zone-detente", "war-bulletin")
+2. NEVER use generic names like "general", "off-topic", "annonces", "reglement" — ALWAYS themed unique names
+3. NEVER use generic category names — create immersive names tied to the theme
+4. Topics must be catchy, fun, with the server's personality
+5. Rules must have the SERVER's voice, not copy-paste generic rules
+6. Custom roles must be ORIGINAL and perfectly themed
+7. Seed ${seed} = this generation must be 100% UNIQUE — use it to vary your inspiration
+8. No channel or category name should look like any previous generation
+9. Generate at least 3 voiceChannels names themed to the server
 
 Réponds UNIQUEMENT en JSON valide, sans markdown, sans backticks :
 {
@@ -128,16 +130,17 @@ Réponds UNIQUEMENT en JSON valide, sans markdown, sans backticks :
     "giveaway": "nom catégorie giveaway thématique"
   },
   "channels": {
-    "announcements": "nom-salon-annonces-thematique",
-    "rules":         "nom-salon-reglement-thematique",
-    "presentation":  "nom-salon-presentation-thematique",
-    "general":       "nom-salon-general-thematique",
-    "offtopic":      "nom-salon-offtopic-thematique",
-    "memes":         "nom-salon-memes-thematique",
-    "media":         "nom-salon-media-thematique",
-    "welcome":       "nom-salon-bienvenue-thematique",
-    "roles":         "nom-salon-roles-thematique"
+    "announcements": "channel-name-in-kebab-case-no-accents-themed",
+    "rules":         "channel-name-in-kebab-case-no-accents-themed",
+    "presentation":  "channel-name-in-kebab-case-no-accents-themed",
+    "general":       "channel-name-in-kebab-case-no-accents-themed",
+    "offtopic":      "channel-name-in-kebab-case-no-accents-themed",
+    "memes":         "channel-name-in-kebab-case-no-accents-themed",
+    "media":         "channel-name-in-kebab-case-no-accents-themed",
+    "welcome":       "channel-name-in-kebab-case-no-accents-themed",
+    "roles":         "channel-name-in-kebab-case-no-accents-themed"
   },
+  "voiceChannels": ["voice-name-1", "voice-name-2", "voice-name-3"],
   "topics": {
     "announcements": "topic accrocheur pour le salon annonces",
     "rules":         "topic pour le règlement",
@@ -466,9 +469,17 @@ async function buildServer(guild, data, plan) {
 
   function catName(key, fallback) { return cat[key] || fallback; }
   function chName(key, fallback)  {
-    const raw = ch[key] || fallback;
-    // Sanitize : minuscules, tirets, max 100 chars, pas d'espaces
-    return raw.toLowerCase().replace(/[^a-z0-9\-\_à-ü]/g,'').slice(0,90) || fallback;
+    const raw = (ch[key] || fallback || '').trim();
+    // Discord channel names : lowercase, espaces→tirets, garde lettres+chiffres+tirets
+    return raw
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g,'')  // enlève accents
+      .replace(/\s+/g, '-')                              // espaces → tirets
+      .replace(/[^a-z0-9\-]/g, '')                      // garde alphanum + tirets
+      .replace(/-+/g, '-')                               // tirets multiples → 1
+      .replace(/^-|-$/g, '')                             // trim tirets
+      .slice(0, 90)
+      || fallback;
   }
   function topic(key, fallback)   { return top[key] || fallback; }
 
@@ -545,12 +556,19 @@ async function buildServer(guild, data, plan) {
   // ─── VOCAL ─────────────────────────────────────────────
   if (features.includes('voice')) {
     const catV = await makeCat(catName('voice', '─── ◈ Vocal ───'));
+    const aiVoice = (p.voiceChannels || []).filter(Boolean);
     const count = Math.min(Math.max(parseInt(data.rolesCount) || 3, 1), 5);
-    for (let i = 1; i <= count; i++) {
-      await makeVoice(`『${em.v}』vocal-${i}`, catV);
+    for (let i = 0; i < count; i++) {
+      const vName = aiVoice[i]
+        ? aiVoice[i].toLowerCase().replace(/[^a-z0-9\-]/g,'').slice(0,90)
+        : `vocal-${i+1}`;
+      await makeVoice(`『${em.v}』${vName}`, catV);
     }
     if (isAdv) {
-      await makeVoice(`『🎙️』lounge`, catV, 10);
+      const loungeName = aiVoice[count]
+        ? aiVoice[count].toLowerCase().replace(/[^a-z0-9\-]/g,'').slice(0,90)
+        : 'lounge';
+      await makeVoice(`『🎙️』${loungeName}`, catV, 10);
       await makeVoice(`『🎵』musique`, catV, 20);
     }
     if (isUltra) {
