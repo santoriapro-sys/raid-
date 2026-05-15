@@ -63,22 +63,66 @@ const DB = {
 };
 
 // ═══════════════════════════════════════════════════════════
-//  SESSIONS
+//  SESSIONS — Conversation IA adaptative
 // ═══════════════════════════════════════════════════════════
 const sessions = new Map();
 
-const STEPS = [
-  { key: 'serverName', q: 'Quel est le **nom** de votre serveur ?',            type: 'text' },
-  { key: 'theme',      q: 'Quel est le **thème / domaine** principal ?',        type: 'text' },
-  { key: 'members',    q: 'Combien de **membres** prévus ?',                    type: 'text' },
-  { key: 'language',   q: 'Quelle est la **langue** principale ?',              type: 'text' },
-  { key: 'rolesCount', q: 'Combien de **rôles** souhaitez-vous ? (3-10)',       type: 'text' },
-  { key: 'style',      q: 'Quel est le **style** de votre serveur ?',           type: 'select_style' },
-  { key: 'features',   q: 'Quelles **fonctionnalités** souhaitez-vous ?',       type: 'select_features' },
-  { key: 'finish',     q: 'Quel **niveau de finition** souhaitez-vous ?',       type: 'select_finish' },
-  { key: 'colors',     q: 'Quelles sont les **couleurs / ambiance** ?',         type: 'text' },
-  { key: 'founder',    q: 'Quel est le **nom du fondateur** ?',                 type: 'text' }
+// Questions de base — l'IA génère les suivantes dynamiquement
+const BASE_QUESTIONS = [
+  { key: 'serverName', q: 'Quel est le **nom** de ton serveur ?' },
+  { key: 'theme',      q: 'Quel est le **thème principal** ? (gaming, communauté, anime, business, art...)' },
+  { key: 'description',q: 'Décris ton serveur en **2-3 phrases** — ambiance, but, public visé.' }
 ];
+
+// Génère les questions suivantes via Gemini selon les réponses déjà données
+async function generateNextQuestions(data) {
+  if (!CONFIG.geminiKey) {
+    // Fallback sans API
+    return [
+      { key: 'features',  q: 'Quelles fonctionnalités veux-tu ? (tickets, logs, staff, vocal, règlement, annonces, giveaways, boosters...)' },
+      { key: 'finish',    q: 'Niveau de finition : **simple**, **avancé** ou **ultra** ?' },
+      { key: 'founder',   q: 'Quel est le **nom du fondateur** ?' }
+    ];
+  }
+
+  const context = Object.entries(data).map(([k,v]) => `${k}: ${v}`).join('\n');
+  const prompt = `Tu es un assistant Discord. En fonction des infos déjà données par l'utilisateur, génère 3 à 5 questions PERTINENTES et ADAPTÉES au projet pour mieux comprendre ce qu'il veut construire.
+
+INFOS DÉJÀ DONNÉES :
+${context}
+
+RÈGLES :
+- Les questions doivent être SPÉCIFIQUES au thème/projet décrit
+- Pose des questions utiles pour construire un serveur unique (public cible, fonctionnalités importantes, ambiance, couleurs, rôles spéciaux, etc.)
+- Questions courtes, directes, en français
+- NE PAS redemander ce qui est déjà su
+- Entre 3 et 5 questions max
+
+Réponds UNIQUEMENT en JSON valide, sans markdown :
+[
+  { "key": "cle_unique", "q": "Question adaptée au projet ?" },
+  { "key": "cle_unique2", "q": "Autre question pertinente ?" }
+]`;
+
+  try {
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + CONFIG.geminiKey;
+    const res = await axios.post(
+      url,
+      { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.9, maxOutputTokens: 800 } },
+      { headers: { 'content-type': 'application/json' }, timeout: 20000 }
+    );
+    const text = res.data.candidates[0].content.parts[0].text;
+    const match = text.match(/\[[\s\S]*\]/);
+    if (!match) return [];
+    return JSON.parse(match[0]);
+  } catch(e) {
+    console.error('Questions API error:', e.message);
+    return [
+      { key: 'features', q: 'Quelles fonctionnalités veux-tu ? (tickets, logs, staff, vocal, règlement, annonces...)' },
+      { key: 'finish',   q: 'Niveau de finition : **simple**, **avancé** ou **ultra** ?' }
+    ];
+  }
+}
 
 // ═══════════════════════════════════════════════════════════
 //  CLAUDE API — génération unique du plan serveur
@@ -86,24 +130,19 @@ const STEPS = [
 async function generateServerPlan(data) {
   if (!CONFIG.geminiKey) return null;
 
-  const features = Array.isArray(data.features) ? data.features.join(', ') : data.features;
   // Seed aléatoire pour forcer l'unicité même avec les mêmes infos
   const seed = Math.random().toString(36).slice(2, 8).toUpperCase();
   const ts   = Date.now();
 
+  // Construire le contexte depuis TOUTES les réponses collectées dynamiquement
+  const allAnswers = Object.entries(data)
+    .map(([k, v]) => `- ${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+    .join('\n');
+
   const prompt = `Tu es un designer expert en serveurs Discord. Génère un plan TOTALEMENT UNIQUE pour ce serveur (seed: ${seed}, ts: ${ts}).
 
-DONNÉES :
-- Nom: ${data.serverName}
-- Thème: ${data.theme}
-- Membres: ${data.members}
-- Langue: ${data.language}
-- Rôles voulus: ${data.rolesCount}
-- Style: ${data.style}
-- Features: ${features}
-- Finition: ${data.finish}
-- Couleurs/Ambiance: ${data.colors}
-- Fondateur: ${data.founder}
+TOUTES LES RÉPONSES DE L'UTILISATEUR :
+${allAnswers}
 
 RÈGLES ABSOLUES :
 1. channel names MUST be in kebab-case, lowercase, NO accents, NO special chars — only a-z, 0-9, hyphens (ex: "arena-principale", "zone-detente", "war-bulletin")
@@ -201,12 +240,13 @@ function progressBar(step, total) {
   return '`' + '█'.repeat(f) + '░'.repeat(10 - f) + '`' + ` ${Math.round((step / total) * 100)}%`;
 }
 
-function embedQuestion(step, total, stepObj) {
+function embedQuestion(q, step, total) {
+  const bar = step && total ? progressBar(step, total) + '\n\n' : '';
   return new EmbedBuilder()
     .setColor(CONFIG.color)
-    .setTitle(`◈  Configuration  —  Étape ${step}/${total}`)
-    .setDescription(`${progressBar(step, total)}\n\n**${stepObj.q}**`)
-    .setFooter({ text: `Generate  •  Étape ${step} sur ${total}` })
+    .setTitle('◈  Configuration')
+    .setDescription(`${bar}**${q}**\n\n> *Réponds directement dans ce DM*`)
+    .setFooter({ text: step && total ? `Generate  •  Question ${step}/${total}` : 'Generate  •  Configuration' })
     .setTimestamp();
 }
 
@@ -233,21 +273,14 @@ function embedPanel(client) {
 }
 
 function embedSummary(data) {
-  const features = Array.isArray(data.features) ? data.features.join(', ') : data.features;
+  const lines = Object.entries(data)
+    .map(([k, v]) => `> **${k} :** ${Array.isArray(v) ? v.join(', ') : v}`)
+    .join('\n');
   return new EmbedBuilder()
     .setColor(CONFIG.color)
     .setTitle('◈  Récapitulatif')
     .setDescription(
-      `> **Nom :** ${data.serverName}\n` +
-      `> **Thème :** ${data.theme}\n` +
-      `> **Membres :** ${data.members}\n` +
-      `> **Langue :** ${data.language}\n` +
-      `> **Rôles :** ${data.rolesCount}\n` +
-      `> **Style :** ${data.style}\n` +
-      `> **Finition :** ${data.finish}\n` +
-      `> **Couleurs :** ${data.colors}\n` +
-      `> **Fondateur :** ${data.founder}\n` +
-      `> **Options :** ${features}\n\n` +
+      lines + '\n\n' +
       '─────────────────────────────\n' +
       '> Confirme pour lancer la génération.'
     )
@@ -287,54 +320,7 @@ function rowConfirm() {
   );
 }
 
-function rowStyle() {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder().setCustomId('sel_style').setPlaceholder('Choisissez un style...').addOptions([
-      { label: 'Gaming',      value: 'gaming',     emoji: '🎮' },
-      { label: 'Communauté',  value: 'communaute', emoji: '💬' },
-      { label: 'E-girl',      value: 'egirl',      emoji: '🌸' },
-      { label: 'Business',    value: 'business',   emoji: '💼' },
-      { label: 'Chill',       value: 'chill',      emoji: '🌙' },
-      { label: 'Anime',       value: 'anime',      emoji: '⛩️' },
-      { label: 'Stream',      value: 'stream',     emoji: '📺' },
-      { label: 'Autre',       value: 'autre',      emoji: '✨' }
-    ])
-  );
-}
-
-function rowFeatures() {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder().setCustomId('sel_features').setPlaceholder('Fonctionnalités...').setMinValues(1).setMaxValues(10).addOptions([
-      { label: 'Salons vocaux',      value: 'voice',         emoji: '🔊' },
-      { label: 'Système ticket',     value: 'tickets',       emoji: '🎫' },
-      { label: 'Logs',               value: 'logs',          emoji: '📋' },
-      { label: 'Règlement',          value: 'rules',         emoji: '📜' },
-      { label: 'Annonces',           value: 'announcements', emoji: '📢' },
-      { label: 'Présentation',       value: 'presentation',  emoji: '👤' },
-      { label: 'Staff',              value: 'staff',         emoji: '🛡️' },
-      { label: 'Boosters',           value: 'boosters',      emoji: '💎' },
-      { label: 'Giveaways',          value: 'giveaways',     emoji: '🎁' },
-      { label: 'Rôles colorés',      value: 'colored_roles', emoji: '🎨' }
-    ])
-  );
-}
-
-function rowFinish() {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder().setCustomId('sel_finish').setPlaceholder('Niveau de finition...').addOptions([
-      { label: 'Simple',        value: 'simple', emoji: '⚪', description: 'Essentiel uniquement' },
-      { label: 'Avancé',        value: 'avance', emoji: '🔵', description: 'Configuration complète' },
-      { label: 'Ultra Premium', value: 'ultra',  emoji: '🟣', description: 'Setup complet premium' }
-    ])
-  );
-}
-
-function getRowForStep(step) {
-  if (step.type === 'select_style')    return [rowStyle()];
-  if (step.type === 'select_features') return [rowFeatures()];
-  if (step.type === 'select_finish')   return [rowFinish()];
-  return [];
-}
+// ─── Select menus supprimés — remplacés par conversation IA ───
 
 function rowGuildSelect(guilds) {
   return new ActionRowBuilder().addComponents(
@@ -878,25 +864,49 @@ client.on('guildBanRemove', async (ban) => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  // ─── DM : réponse questionnaire ──────────────────────────
+  // ─── DM : conversation IA adaptative ────────────────────
   if (!message.guild) {
     const session = sessions.get(message.author.id);
     if (!session) return;
-    if (session.awaitingGuild) return; // On attend une selection de guild
-    const step = STEPS[session.step];
-    if (!step || step.type !== 'text') return;
+    if (session.awaitingGuild) return;
 
-    session.data[step.key] = message.content.trim();
+    const answer = message.content.trim();
+    if (!answer) return;
+
+    // Enregistrer la réponse à la question courante
+    const currentQ = session.questions[session.step];
+    if (!currentQ) return;
+    session.data[currentQ.key] = answer;
     session.step++;
 
-    if (session.step >= STEPS.length) {
+    // Toutes les questions de base répondues → générer les questions adaptées
+    if (session.step === BASE_QUESTIONS.length && !session.extraQuestionsGenerated) {
+      session.extraQuestionsGenerated = true;
+
+      // Afficher un message de chargement
+      const loadingMsg = await message.reply({
+        embeds: [new EmbedBuilder()
+          .setColor(CONFIG.color)
+          .setTitle('◈  Analyse en cours...')
+          .setDescription('> *Génération des questions adaptées à ton projet...*')
+          .setTimestamp()]
+      });
+
+      const extraQs = await generateNextQuestions(session.data);
+      session.questions = [...BASE_QUESTIONS, ...extraQs];
+
+      await loadingMsg.delete().catch(() => {});
+    }
+
+    // Toutes les questions répondues → récapitulatif
+    if (session.step >= session.questions.length) {
       return message.reply({ embeds: [embedSummary(session.data)], components: [rowConfirm()] });
     }
 
-    const nextStep = STEPS[session.step];
+    // Question suivante
+    const nextQ = session.questions[session.step];
     return message.reply({
-      embeds: [embedQuestion(session.step + 1, STEPS.length, nextStep)],
-      components: getRowForStep(nextStep)
+      embeds: [embedQuestion(nextQ.q, session.step + 1, session.questions.length)]
     });
   }
 
@@ -940,7 +950,7 @@ client.on('messageCreate', async (message) => {
     }
 
     // Créer une session en attente de selection de guild
-    sessions.set(message.author.id, { step: 0, data: {}, guildId: null, awaitingGuild: true });
+    sessions.set(message.author.id, { step: 0, data: {}, guildId: null, awaitingGuild: true, questions: [...BASE_QUESTIONS], extraQuestionsGenerated: false });
 
     const guildsArray = [...adminGuilds.values()];
 
@@ -1017,7 +1027,7 @@ client.on('interactionCreate', async (interaction) => {
     if (adminGuilds.size === 0)
       return interaction.reply({ embeds: [embedErr('Accès refusé', '> Tu dois être **Administrateur** sur un serveur pour générer.\n> Ajoute le bot sur un serveur où tu es admin.')], ephemeral: true });
 
-    sessions.set(interaction.user.id, { step: 0, data: {}, guildId: null, awaitingGuild: true });
+    sessions.set(interaction.user.id, { step: 0, data: {}, guildId: null, awaitingGuild: true, questions: [...BASE_QUESTIONS], extraQuestionsGenerated: false });
     const guildsArray = [...adminGuilds.values()];
 
     try {
@@ -1054,37 +1064,15 @@ client.on('interactionCreate', async (interaction) => {
 > Choisis un serveur où tu as la permission admin.`)], components: [] });
     }
 
-    await interaction.update({ embeds: [embedBase('◈  Serveur sélectionné', `> ✅ Serveur : **${guild.name}**\n\n> Le questionnaire va démarrer...`)], components: [] });
+    await interaction.update({ embeds: [embedBase('◈  Serveur sélectionné', `> ✅ Serveur : **${guild.name}**\n\n> Les questions vont arriver...`)], components: [] });
 
-    const firstStep = STEPS[0];
+    const firstQ = BASE_QUESTIONS[0];
     return interaction.followUp({
-      embeds: [embedQuestion(1, STEPS.length, firstStep)],
-      components: getRowForStep(firstStep)
+      embeds: [embedQuestion(firstQ.q, 1, '?')]
     });
   }
 
-  // ─── Select menus questionnaire (dans DMs) ───────────────
-  if (interaction.isStringSelectMenu() && ['sel_style','sel_features','sel_finish'].includes(interaction.customId)) {
-    const session = sessions.get(interaction.user.id);
-    if (!session) return interaction.reply({ content: 'Session expirée.', ephemeral: true });
-
-    const step  = STEPS[session.step];
-    const value = interaction.values.length === 1 ? interaction.values[0] : interaction.values;
-    session.data[step.key] = value;
-    session.step++;
-
-    await interaction.update({ components: [] });
-
-    if (session.step >= STEPS.length) {
-      return interaction.followUp({ embeds: [embedSummary(session.data)], components: [rowConfirm()] });
-    }
-
-    const nextStep = STEPS[session.step];
-    return interaction.followUp({
-      embeds: [embedQuestion(session.step + 1, STEPS.length, nextStep)],
-      components: getRowForStep(nextStep)
-    });
-  }
+  // ─── Anciens select menus supprimés — conversation IA ───
 
   // ─── Bouton : Confirmer génération ───────────────────────
   if (interaction.isButton() && interaction.customId === 'btn_confirm') {
